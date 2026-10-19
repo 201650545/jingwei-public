@@ -1,905 +1,1577 @@
-/**
- * 经纬 · Client 半边（v0.2：黑白无限画布 + 选中/菜单/预览/单点重跑）
- *
- * 视觉红线：只有 #000、#fff、rgba(255,255,255,x)，不出现任何色相。
- * 画布上只有节点、连线；唯一的临时浮层是节点菜单与产物预览。
- *
- * 数据：Host 路由 jingwei/data/graph.json；动作：jingwei/actions/*。
- */
+
 window.__ModuleLoader__.load({
   id: '@local/jingwei',
   factory(require) {
-    'use strict'
+    'use strict';
 
-    const React = require('react')
-
-    const NODE_W = 188
-    const GRID = 24
-    const MIN_K = 0.25
-    const MAX_K = 3
+    const React = require('react');
+    const SVG = 'http://www.w3.org/2000/svg';
+    const W = 188, MW = 164, GAP = 226;
+    const MIN = .25, MAX = 3;
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const branch = n => n.kind !== 'merge';
+    const seconds = v => (v / 1000).toFixed(2) + 's';
 
     const CSS = `
 :host {
-  position: relative;
-  display: block;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  background: #000;
-  color: #fff;
-  font-family: "微软雅黑", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
+  display:block;position:relative;width:100%;height:100%;
+  min-height:0;overflow:hidden;background:#000;color:#fff;
+  font-family:"PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-.jw-viewport {
-  position: absolute; inset: 0; overflow: hidden;
-  background: #000; touch-action: none; cursor: default;
-  user-select: none; -webkit-user-select: none;
+*,*::before,*::after{box-sizing:border-box}
+*{margin:0;padding:0}
+button{font-family:inherit}
+.stage {
+  position:absolute;inset:0;overflow:hidden;isolation:isolate;
+  background:#000;touch-action:none;cursor:grab;
+  user-select:none;-webkit-user-select:none;
 }
-.jw-viewport.panning { cursor: grabbing; }
-.jw-grid {
-  position: absolute; inset: 0;
-  background-image: radial-gradient(circle, rgba(255,255,255,.12) 1px, transparent 1.2px);
-  background-size: ${GRID}px ${GRID}px;
-  background-position: 0 0;
+.stage.panning{cursor:grabbing}
+.grid{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:.72}
+.world {
+  position:absolute;left:0;top:0;width:0;height:0;
+  transform-origin:0 0;will-change:transform;
 }
-.jw-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-.jw-edge {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  overflow: visible; pointer-events: none;
+.edges {
+  position:absolute;left:0;top:0;width:1px;height:1px;
+  overflow:visible;pointer-events:none;
 }
-.jw-edge path { fill: none; stroke: rgba(255,255,255,.26); stroke-width: 1; }
-.jw-node {
-  position: absolute; width: ${NODE_W}px; padding: 12px 13px 11px;
-  background: #000; border: 1px solid rgba(255,255,255,.26); border-radius: 3px;
-  cursor: grab;
+.wire path {
+  fill:none;stroke:rgba(255,255,255,.28);stroke-width:1;
+  stroke-linecap:round;vector-effect:non-scaling-stroke;
+  transition:stroke .18s ease,opacity .18s ease;
 }
-.jw-node:hover { border-color: rgba(255,255,255,.62); }
-.jw-node.dragging { cursor: grabbing; border-color: #fff; }
-.jw-node.selected { border-color: #fff; outline: 1px solid #fff; }
-.jw-node.running { border-style: dashed; border-color: rgba(255,255,255,.6); animation: jw-breathe 2.2s ease-in-out infinite; }
-.jw-node.failed .jw-node-sub { color: rgba(255,255,255,.2); }
-.jw-node-top { display: flex; align-items: baseline; gap: 6px; }
-.jw-node-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; letter-spacing: .5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; }
-.jw-node-time { flex: 0 0 auto; font: 11px/1 ui-monospace, Consolas, monospace; color: rgba(255,255,255,.55); white-space: nowrap; }
-.jw-more {
-  flex: 0 0 auto; background: none; border: 0; padding: 0 1px;
-  font: 12px/1 ui-monospace, Consolas, monospace; color: rgba(255,255,255,.35);
-  cursor: pointer; opacity: 0; transition: opacity .15s;
+.wire circle{fill:rgba(255,255,255,.37);transition:fill .18s ease}
+.wire.active path{stroke:rgba(255,255,255,.83)}
+.wire.active circle{fill:#fff}
+.wire.failed path{stroke:rgba(255,255,255,.13)}
+.wire.running path {
+  stroke:rgba(255,255,255,.57);stroke-dasharray:3 6;
+  animation:flow 2.5s linear infinite;
 }
-.jw-node:hover .jw-more, .jw-node.selected .jw-more { opacity: 1; }
-.jw-more:hover { color: #fff; }
-.jw-node-merge { width: 156px; border-color: rgba(255,255,255,.18); }
-.jw-node-merge .jw-node-sub { color: rgba(255,255,255,.26); }
-.jw-node-sub {
-  margin-top: 7px; font: 10px/1.4 ui-monospace, Consolas, monospace;
-  color: rgba(255,255,255,.34); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.wire.running.active path{stroke:#fff}
+.nodes{position:absolute;left:0;top:0}
+.node {
+  position:absolute;width:${W}px;min-height:94px;
+  display:flex;flex-direction:column;justify-content:space-between;
+  gap:18px;padding:16px 16px 14px;
+  background:#000;border:1px solid rgba(255,255,255,.32);
+  border-radius:2px;cursor:grab;
+  transition:border-color .17s ease,outline-color .17s ease;
 }
-.jw-menu {
-  position: absolute; z-index: 20; min-width: 132px;
-  background: #000; border: 1px solid rgba(255,255,255,.3); padding: 4px 0;
+.node:hover{border-color:rgba(255,255,255,.76)}
+.node.selected {
+  border-color:#fff;outline:1px solid rgba(255,255,255,.65);
+  outline-offset:3px;
 }
-.jw-menu button {
-  display: block; width: 100%; text-align: left; background: none; border: 0;
-  color: #fff; font: 12px/1.2 "微软雅黑", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
-  padding: 8px 12px; cursor: pointer; white-space: nowrap;
+.node.dragging{cursor:grabbing;border-color:#fff}
+.node.running {
+  border-style:dashed;border-color:rgba(255,255,255,.66);
+  animation:breathe 2.6s ease-in-out infinite;
 }
-.jw-menu button:hover:not(:disabled) { background: rgba(255,255,255,.1); }
-.jw-menu button:disabled { color: rgba(255,255,255,.25); cursor: default; }
-.jw-preview {
-  position: absolute; inset: 0; z-index: 30; background: #000;
-  padding: 40px 48px; display: flex; flex-direction: column; gap: 14px;
+.node.running.selected{outline-color:#fff}
+.node.failed{border-color:rgba(255,255,255,.22)}
+.node.failed.selected{border-color:#fff}
+.node-head{display:flex;align-items:baseline;gap:9px;min-width:0}
+.node-name {
+  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;color:#fff;font-size:14px;font-weight:600;
+  line-height:1.4;letter-spacing:.025em;
 }
-.jw-preview-top {
-  display: flex; justify-content: space-between; align-items: center;
-  font: 11px/1 ui-monospace, Consolas, monospace; color: rgba(255,255,255,.45);
+.node-time {
+  flex:none;white-space:nowrap;color:rgba(255,255,255,.54);
+  font:10px/1.35 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em;
 }
-.jw-preview-close {
-  background: none; border: 0; color: rgba(255,255,255,.55);
-  font: 16px/1 ui-monospace, Consolas, monospace; cursor: pointer; padding: 0 2px;
+.node-meta {
+  max-width:calc(100% - 23px);min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:rgba(255,255,255,.39);
+  font:10px/1.5 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  letter-spacing:.025em;
 }
-.jw-preview-close:hover { color: #fff; }
-.jw-preview-body {
-  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
-  overflow: auto;
+.node.failed .node-meta{color:rgba(255,255,255,.23)}
+.node.failed .node-time{color:rgba(255,255,255,.76)}
+.node.running .node-time{animation:fade 2.6s ease-in-out infinite}
+.node.merge {
+  width:${MW}px;min-height:76px;padding:14px 15px 12px;
+  gap:12px;border-color:rgba(255,255,255,.24);
 }
-.jw-preview-body pre {
-  max-width: 100%; max-height: 100%; overflow: auto;
-  font: 12px/1.65 ui-monospace, Consolas, monospace;
-  color: rgba(255,255,255,.88); white-space: pre-wrap; word-break: break-word;
+.node.merge .node-name{font-size:13px}
+.node.merge .node-meta{color:rgba(255,255,255,.35)}
+.more {
+  position:absolute;right:7px;bottom:6px;
+  display:grid;place-items:center;width:29px;height:28px;
+  padding:0;border:0;border-radius:2px;
+  background:rgba(255,255,255,0);color:rgba(255,255,255,.52);
+  font:19px/1 ui-monospace,Consolas,monospace;
+  opacity:0;cursor:pointer;
+  transition:opacity .15s ease,color .15s ease,background .15s ease;
 }
-.jw-preview-body img { max-width: 92%; max-height: 92%; display: block; }
-.jw-preview-body iframe {
-  width: min(900px, 92%); height: 100%;
-  border: 1px solid rgba(255,255,255,.2); background: #fff;
+.node:hover .more,.node.selected .more,.more:focus-visible{opacity:1}
+.more:hover,.more:focus-visible {
+  color:#fff;background:rgba(255,255,255,.11);
 }
-@keyframes jw-breathe {
-  0%, 100% { border-color: rgba(255,255,255,.6); }
-  50% { border-color: rgba(255,255,255,.2); }
+.more:focus-visible{outline:1px solid rgba(255,255,255,.7)}
+.menu {
+  position:absolute;z-index:20;width:172px;padding:5px;
+  background:#000;border:1px solid rgba(255,255,255,.69);
+  border-radius:2px;animation:appear .15s ease-out both;
 }
-`
+.menu button {
+  display:flex;align-items:center;width:100%;min-height:38px;
+  padding:0 12px;border:0;border-radius:1px;background:#000;
+  color:rgba(255,255,255,.86);text-align:left;
+  font-size:12px;font-weight:500;line-height:1.4;
+  letter-spacing:.035em;white-space:nowrap;cursor:pointer;
+  transition:background .12s ease,color .12s ease;
+}
+.menu button:hover:not(:disabled),.menu button:focus-visible:not(:disabled) {
+  background:rgba(255,255,255,.12);color:#fff;outline:none;
+}
+.menu button:disabled{color:rgba(255,255,255,.27);cursor:default}
+.menu button:last-child {
+  margin-top:4px;padding-top:5px;min-height:43px;
+  border-top:1px solid rgba(255,255,255,.18);border-radius:0;
+}
+.preview {
+  position:absolute;inset:0;z-index:30;display:flex;
+  flex-direction:column;min-width:0;min-height:0;
+  padding:28px 27px 24px;background:#000;
+  animation:appear .2s ease both;
+}
+.preview-head {
+  flex:none;display:flex;align-items:flex-start;
+  justify-content:space-between;gap:16px;
+  padding-bottom:22px;border-bottom:1px solid rgba(255,255,255,.25);
+}
+.preview-label{min-width:0;display:flex;flex-direction:column;gap:9px}
+.preview-kicker {
+  color:rgba(255,255,255,.4);
+  font:10px/1.3 ui-monospace,Consolas,monospace;
+  letter-spacing:.12em;
+}
+.preview-title {
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:16px;font-weight:600;line-height:1.45;letter-spacing:.025em;
+}
+.preview-close {
+  flex:none;width:31px;height:31px;border:1px solid rgba(255,255,255,.3);
+  border-radius:2px;background:#000;color:rgba(255,255,255,.7);
+  font:20px/1 ui-monospace,Consolas,monospace;cursor:pointer;
+  transition:border-color .16s ease,color .16s ease;
+}
+.preview-close:hover,.preview-close:focus-visible {
+  border-color:#fff;color:#fff;outline:none;
+}
+.preview-content {
+  flex:1;min-width:0;min-height:0;overflow:auto;
+  display:flex;align-items:center;justify-content:center;
+  padding-top:25px;scrollbar-width:thin;
+  scrollbar-color:rgba(255,255,255,.25) #000;
+}
+.preview-content.text{align-items:flex-start;justify-content:flex-start}
+.preview-content pre {
+  width:100%;padding-bottom:24px;white-space:pre-wrap;
+  overflow-wrap:anywhere;color:rgba(255,255,255,.79);
+  font:11px/1.85 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  tab-size:2;user-select:text;-webkit-user-select:text;
+}
+.preview-content img{display:block;max-width:100%;max-height:100%;object-fit:contain}
+.preview-content iframe {
+  width:100%;height:100%;min-height:100px;border:1px solid rgba(255,255,255,.24);
+  background:#fff;
+}
+@keyframes breathe {
+  0%,100%{border-color:rgba(255,255,255,.67)}
+  50%{border-color:rgba(255,255,255,.29)}
+}
+@keyframes fade{0%,100%{opacity:1}50%{opacity:.48}}
+@keyframes flow{to{stroke-dashoffset:-18}}
+@keyframes appear {
+  from{opacity:0;transform:translateY(4px)}
+  to{opacity:1;transform:translateY(0)}
+}
+@media(max-width:340px){.preview{padding:22px 19px}.menu{width:162px}}
+@media(prefers-reduced-motion:reduce){
+  .node,.node *,.wire *,.menu,.preview,.preview-close{
+    animation:none!important;transition:none!important;
+  }
+}`;
 
     const HTML = `
-<div class="jw-viewport" role="region" aria-label="经纬无限画布">
-  <div class="jw-grid"></div>
-  <svg class="jw-edge" aria-hidden="true"><g class="jw-edge-g"></g></svg>
-  <div class="jw-world"></div>
-</div>`
+<div class="stage" role="region" aria-label="经纬无限画布">
+  <svg class="grid" aria-hidden="true">
+    <defs>
+      <pattern id="jw-grid-dots" width="32" height="32" patternUnits="userSpaceOnUse">
+        <circle cx="1" cy="1" r=".75" fill="rgba(255,255,255,.24)"/>
+      </pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#jw-grid-dots)"/>
+  </svg>
+  <div class="world">
+    <svg class="edges" aria-hidden="true"><g></g></svg>
+    <div class="nodes"></div>
+  </div>
+</div>`;
 
-    const FALLBACK_GRAPH = {
+    const DEMO = {
       version: 1,
       runId: 'demo-run-001',
       nodes: [
-        { id: 'copy', kind: 'branch', title: '文案', provider: 'provider', model: 'model-a', status: 'done', elapsedMs: 169270, artifact: 'copy/note.json', artifactType: 'json' },
-        { id: 'design', kind: 'branch', title: '设计', provider: 'provider', model: 'model-b', status: 'done', elapsedMs: 222646, artifact: 'design/note.html', artifactType: 'html' },
-        { id: 'merge', kind: 'merge', title: '汇总', status: 'done', elapsedMs: 222646 },
+        {
+          id: 'copy',
+          kind: 'branch',
+          title: '文案',
+          model: 'model-a',
+          status: 'done',
+          elapsedMs: 169270,
+          artifact: 'copy/note.json',
+          artifactType: 'json'
+        },
+        {
+          id: 'design',
+          kind: 'branch',
+          title: '设计',
+          model: 'model-b',
+          status: 'done',
+          elapsedMs: 222646,
+          artifact: 'design/note.html',
+          artifactType: 'html'
+        },
+        {
+          id: 'merge',
+          kind: 'merge',
+          title: '汇总',
+          status: 'done',
+          elapsedMs: 222646
+        }
       ],
-      edges: [['copy', 'merge'], ['design', 'merge']],
+      edges: [['copy', 'merge'], ['design', 'merge']]
+    };
+
+    function normalize(raw) {
+      const src = raw && typeof raw === 'object' ? raw : {};
+      const nodes = [];
+
+      for (const n of Array.isArray(src.nodes) ? src.nodes : []) {
+        if (!n || typeof n.id !== 'string' || !n.id) continue;
+
+        const ms = Number(n.elapsedMs);
+
+        nodes.push({
+          id: n.id,
+          kind: n.kind === 'merge' ? 'merge' : 'branch',
+          title: String(n.title == null ? n.id : n.title),
+          provider: String(n.provider || ''),
+          model: String(n.model || ''),
+          status: ['idle', 'running', 'done', 'failed'].includes(n.status)
+            ? n.status : 'idle',
+          elapsedMs: n.elapsedMs != null && Number.isFinite(ms) && ms >= 0
+            ? ms : undefined,
+          startedAt: Number.isFinite(Number(n.startedAt))
+            ? Number(n.startedAt) : undefined,
+          artifact: typeof n.artifact === 'string' && n.artifact
+            ? n.artifact : undefined,
+          artifactType: typeof n.artifactType === 'string'
+            ? n.artifactType : undefined,
+          error: typeof n.error === 'string' ? n.error : undefined
+        });
+      }
+
+      if (!nodes.length) {
+        return src === DEMO ? { ...DEMO } : normalize(DEMO);
+      }
+
+      const ids = new Set(nodes.map(n => n.id));
+      const edges = (Array.isArray(src.edges) ? src.edges : []).filter(
+        e => Array.isArray(e) && e.length === 2 &&
+          ids.has(e[0]) && ids.has(e[1])
+      );
+
+      return {
+        version: 1,
+        runId: String(src.runId || ''),
+        nodes,
+        edges
+      };
     }
 
-    const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value))
-    const fmtMs = (ms) => (ms / 1000).toFixed(2) + 's'
-    const isBranch = (node) => node.kind === 'branch'
+    function createCanvas(host, shadow, sessionId) {
+      const stage = shadow.querySelector('.stage');
+      const world = shadow.querySelector('.world');
+      const grid = shadow.querySelector('.grid');
+      const pattern = shadow.querySelector('#jw-grid-dots');
+      const nodeLayer = shadow.querySelector('.nodes');
+      const edgeLayer = shadow.querySelector('.edges g');
 
-    function normalizeGraph(raw) {
-      const src = raw && typeof raw === 'object' ? raw : {}
-      const list = Array.isArray(src.nodes) ? src.nodes : []
-      const nodes = []
-      for (const item of list) {
-        if (!item || typeof item.id !== 'string' || item.id.length === 0) continue
-        const status = ['idle', 'running', 'done', 'failed'].includes(item.status) ? item.status : 'idle'
-        const elapsed = Number(item.elapsedMs)
-        nodes.push({
-          id: item.id,
-          kind: item.kind === 'merge' ? 'merge' : 'branch',
-          title: String(item.title != null ? item.title : item.id),
-          provider: String(item.provider != null ? item.provider : ''),
-          model: String(item.model != null ? item.model : ''),
-          status,
-          elapsedMs: Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : undefined,
-          startedAt: Number.isFinite(Number(item.startedAt)) ? Number(item.startedAt) : undefined,
-          artifact: typeof item.artifact === 'string' && item.artifact.length > 0 ? item.artifact : undefined,
-          artifactType: typeof item.artifactType === 'string' ? item.artifactType : undefined,
-          error: typeof item.error === 'string' ? item.error : undefined,
-        })
+      const positions = Object.create(null);
+      const elements = Object.create(null);
+      const view = { x: 0, y: 0, k: 1 };
+      const listeners = [];
+      const wires = [];
+      const pending = new Set();
+
+      let graph = normalize(DEMO);
+      let idsKey = '', edgesKey = '';
+      let selected = null, menu = null, preview = null, drag = null;
+      let autoFit = true, firstFit = true, destroyed = false;
+      let poll = 0, saveTimer = 0, frame = 0, sequence = 0;
+      let pollingBusy = false;
+
+      const listen = (el, type, fn, opts) => {
+        el.addEventListener(type, fn, opts);
+        listeners.push(() => el.removeEventListener(type, fn, opts));
+      };
+
+      const getNode = id => graph.nodes.find(n => n.id === id);
+      const nodeIds = () => graph.nodes.map(n => n.id).join('\u0000');
+
+      function drawView() {
+        world.style.transform =
+          `translate(${view.x}px,${view.y}px) scale(${view.k})`;
+
+        pattern.setAttribute(
+          'patternTransform',
+          `translate(${view.x} ${view.y}) scale(${view.k})`
+        );
+
+        grid.style.opacity = String(clamp(view.k * .92, .25, .75));
       }
-      if (nodes.length === 0) return normalizeGraph(FALLBACK_GRAPH)
-      const ids = new Set(nodes.map((node) => node.id))
-      const edges = []
-      if (Array.isArray(src.edges)) {
-        for (const edge of src.edges) {
-          if (!Array.isArray(edge) || edge.length !== 2) continue
-          if (!ids.has(edge[0]) || !ids.has(edge[1])) continue
-          edges.push([edge[0], edge[1]])
+
+      function stopMotion() {
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+      }
+
+      function moveView(target, animated) {
+        stopMotion();
+
+        const reduced = window.matchMedia &&
+          window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        if (!animated || reduced) {
+          Object.assign(view, target);
+          drawView();
+          return;
+        }
+
+        const start = performance.now();
+        const from = { ...view };
+
+        const tick = now => {
+          if (destroyed) return;
+
+          const p = clamp((now - start) / 380, 0, 1);
+          const t = 1 - Math.pow(1 - p, 3);
+
+          for (const key of ['x', 'y', 'k']) {
+            view[key] = from[key] + (target[key] - from[key]) * t;
+          }
+
+          drawView();
+          frame = p < 1 ? requestAnimationFrame(tick) : 0;
+        };
+
+        frame = requestAnimationFrame(tick);
+      }
+
+      function fit() {
+        const vw = stage.clientWidth;
+        const vh = stage.clientHeight;
+
+        if (!vw || !vh) return;
+
+        let left = Infinity;
+        let top = Infinity;
+        let right = -Infinity;
+        let bottom = -Infinity;
+
+        for (const [id, el] of Object.entries(elements)) {
+          const p = positions[id];
+          if (!p) continue;
+
+          left = Math.min(left, p.x);
+          top = Math.min(top, p.y);
+          right = Math.max(right, p.x + el.offsetWidth);
+          bottom = Math.max(bottom, p.y + el.offsetHeight);
+        }
+
+        if (!Number.isFinite(left)) return;
+
+        const w = Math.max(1, right - left);
+        const h = Math.max(1, bottom - top);
+        const px = clamp(vw * .055, 18, 42);
+        const py = clamp(vh * .07, 24, 60);
+
+        const k = clamp(
+          Math.min((vw - px * 2) / w, (vh - py * 2) / h),
+          MIN,
+          1.4
+        );
+
+        autoFit = true;
+
+        moveView({
+          k,
+          x: (vw - w * k) / 2 - left * k,
+          y: (vh - h * k) / 2 - top * k - Math.min(15, vh * .025)
+        }, !firstFit);
+
+        firstFit = false;
+      }
+
+      function layoutMissing() {
+        const count = graph.nodes.filter(branch).length;
+        const columns = Math.min(2, Math.max(1, count));
+        const span = columns === 1 ? W : GAP + W;
+
+        let i = 0;
+        let j = 0;
+
+        const rows = Math.ceil(count / columns);
+
+        for (const n of graph.nodes) {
+          if (!positions[n.id]) {
+            if (branch(n)) {
+              const row = Math.floor(i / columns);
+              const col = i % columns;
+              const oddLast = columns === 2 &&
+                row === rows - 1 && count % 2 === 1;
+
+              positions[n.id] = {
+                x: oddLast ? (span - W) / 2 : col * GAP,
+                y: row * 166
+              };
+            } else {
+              positions[n.id] = {
+                x: (span - MW) / 2 + j * (MW + 25),
+                y: Math.max(1, rows) * 166 + 25
+              };
+            }
+          }
+
+          if (branch(n)) i++;
+          else j++;
         }
       }
-      return { version: 1, runId: String(src.runId != null ? src.runId : ''), nodes, edges }
-    }
 
-    function artifactKind(node) {
-      if (node.artifactType) return node.artifactType
-      const name = String(node.artifact || '')
-      const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
-      if (['png', 'jpg', 'jpeg', 'webp', 'svg'].includes(ext)) return 'image'
-      if (ext === 'html' || ext === 'htm') return 'html'
-      if (ext === 'json') return 'json'
-      return 'text'
-    }
+      function timeLabel(n) {
+        if (n.status === 'failed') return '失败';
+        if (n.status === 'idle') return '—';
 
-    function createController(host, shadow, sessionId) {
-      const viewport = shadow.querySelector('.jw-viewport')
-      const grid = shadow.querySelector('.jw-grid')
-      const world = shadow.querySelector('.jw-world')
-      const edgeG = shadow.querySelector('.jw-edge-g')
+        if (n.status === 'running') {
+          if (!branch(n)) {
+            const count = graph.nodes.filter(
+              x => branch(x) && x.status === 'running'
+            ).length;
 
-      const view = { x: 0, y: 0, k: 1 }
-      const positions = Object.create(null)
-      const nodes = Object.create(null)
-      let graph = normalizeGraph(FALLBACK_GRAPH)
-      let renderedIds = ''
-      let selectedId = null
-      let menuEl = null
-      let previewEl = null
-      let drag = null
-      let autoFit = true
-      let destroyed = false
-      let pollTimer = 0
-      let saveTimer = 0
-      const disposers = []
-      const on = (target, type, handler) => {
-        target.addEventListener(type, handler)
-        disposers.push(() => target.removeEventListener(type, handler))
+            return '等 ' + count + ' 路';
+          }
+
+          return '运行中';
+        }
+
+        return Number.isFinite(n.elapsedMs)
+          ? seconds(n.elapsedMs) : '—';
       }
 
-      /* ---------------- 视图 ---------------- */
-      function applyView() {
-        world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`
-        grid.style.backgroundSize = `${GRID * view.k}px ${GRID * view.k}px`
-        grid.style.backgroundPosition = `${view.x}px ${view.y}px`
-        drawEdges()
+      function updateNode(n) {
+        const el = elements[n.id];
+        if (!el) return;
+
+        el.classList.toggle('selected', selected === n.id);
+        el.classList.toggle('running', n.status === 'running');
+        el.classList.toggle('failed', n.status === 'failed');
+
+        el.querySelector('.node-name').textContent = n.title;
+
+        const time = el.querySelector('.node-time');
+        time.textContent = timeLabel(n);
+        time.title = n.error || '';
+
+        const meta = el.querySelector('.node-meta');
+        meta.textContent = branch(n)
+          ? (n.model || '—')
+          : graph.nodes.filter(branch).length + ' 路';
+
+        meta.title = meta.textContent;
       }
 
-      function place(id) {
-        const el = nodes[id]
-        const point = positions[id]
-        if (el && point) {
-          el.style.left = point.x + 'px'
-          el.style.top = point.y + 'px'
+      function makeNode(n) {
+        const el = document.createElement('div');
+        el.className = 'node' + (branch(n) ? '' : ' merge');
+        el.dataset.id = n.id;
+
+        const head = document.createElement('div');
+        head.className = 'node-head';
+
+        const name = document.createElement('span');
+        name.className = 'node-name';
+
+        const time = document.createElement('span');
+        time.className = 'node-time';
+
+        head.append(name, time);
+
+        const meta = document.createElement('div');
+        meta.className = 'node-meta';
+
+        el.append(head, meta);
+
+        if (branch(n)) {
+          const more = document.createElement('button');
+
+          more.type = 'button';
+          more.className = 'more';
+          more.textContent = '⋯';
+          more.title = '节点操作';
+
+          more.setAttribute(
+            'aria-label',
+            n.title + '，节点操作'
+          );
+
+          more.setAttribute('aria-haspopup', 'menu');
+
+          more.addEventListener('pointerdown', e => {
+            e.stopPropagation();
+          });
+
+          more.addEventListener('click', e => {
+            e.stopPropagation();
+            openMenu(n.id, more);
+          });
+
+          el.appendChild(more);
+        }
+
+        el.addEventListener('dblclick', e => {
+          e.stopPropagation();
+          if (e.target.closest('.more')) return;
+          openPreview(n.id);
+        });
+
+        return el;
+      }
+
+      function positionNode(id) {
+        const p = positions[id];
+        const el = elements[id];
+
+        if (!p || !el) return;
+
+        el.style.left = p.x + 'px';
+        el.style.top = p.y + 'px';
+      }
+
+      function makeWires() {
+        edgesKey = JSON.stringify(graph.edges);
+        wires.length = 0;
+        edgeLayer.textContent = '';
+
+        for (const [from, to] of graph.edges) {
+          const g = document.createElementNS(SVG, 'g');
+          g.setAttribute('class', 'wire');
+
+          const path = document.createElementNS(SVG, 'path');
+          const a = document.createElementNS(SVG, 'circle');
+          const b = document.createElementNS(SVG, 'circle');
+
+          a.setAttribute('r', '1.8');
+          b.setAttribute('r', '1.8');
+
+          g.append(path, a, b);
+          edgeLayer.appendChild(g);
+
+          wires.push({ from, to, g, path, a, b });
+        }
+
+        drawEdges();
+      }
+
+      function updateWires() {
+        for (const w of wires) {
+          const n = getNode(w.from);
+
+          w.g.classList.toggle(
+            'active',
+            selected === w.from || selected === w.to
+          );
+
+          w.g.classList.toggle(
+            'running',
+            !!n && n.status === 'running'
+          );
+
+          w.g.classList.toggle(
+            'failed',
+            !!n && n.status === 'failed'
+          );
         }
       }
 
       function drawEdges() {
-        edgeG.textContent = ''
-        for (const [from, to] of graph.edges) {
-          const a = nodes[from]
-          const b = nodes[to]
-          const pa = positions[from]
-          const pb = positions[to]
-          if (!a || !b || !pa || !pb) continue
-          const x1 = view.x + (pa.x + a.offsetWidth / 2) * view.k
-          const y1 = view.y + (pa.y + a.offsetHeight) * view.k
-          const x2 = view.x + (pb.x + b.offsetWidth / 2) * view.k
-          const y2 = view.y + pb.y * view.k
-          const mid = (y1 + y2) / 2
-          const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-          path.setAttribute('d', `M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`)
-          edgeG.appendChild(path)
-        }
-      }
+        for (const w of wires) {
+          const a = elements[w.from];
+          const b = elements[w.to];
+          const pa = positions[w.from];
+          const pb = positions[w.to];
 
-      function fit() {
-        const vw = viewport.clientWidth
-        const vh = viewport.clientHeight
-        if (!vw || !vh || Object.keys(nodes).length === 0) return
-        let minX = Infinity
-        let minY = Infinity
-        let maxX = -Infinity
-        let maxY = -Infinity
-        for (const [id, el] of Object.entries(nodes)) {
-          const point = positions[id]
-          if (!point) continue
-          minX = Math.min(minX, point.x)
-          minY = Math.min(minY, point.y)
-          maxX = Math.max(maxX, point.x + el.offsetWidth)
-          maxY = Math.max(maxY, point.y + el.offsetHeight)
-        }
-        const width = Math.max(1, maxX - minX)
-        const height = Math.max(1, maxY - minY)
-        const pad = Math.min(48, Math.max(16, Math.min(vw, vh) * 0.06))
-        view.k = clamp(Math.min((vw - pad * 2) / width, (vh - pad * 2) / height), MIN_K, 1.5)
-        view.x = (vw - width * view.k) / 2 - minX * view.k
-        view.y = (vh - height * view.k) / 2 - minY * view.k
-        autoFit = true
-        applyView()
-      }
-
-      /* ---------------- 节点 ---------------- */
-      function defaultPosition(node, index, count) {
-        if (!isBranch(node)) {
-          const span = count > 1 ? (count - 1) * 220 : 0
-          return { x: span / 2 + (NODE_W - 156) / 2, y: 188 }
-        }
-        return { x: index * 220, y: 0 }
-      }
-
-      function layoutMissing() {
-        const branches = graph.nodes.filter(isBranch)
-        let index = 0
-        for (const node of graph.nodes) {
-          if (isBranch(node)) {
-            if (!positions[node.id]) positions[node.id] = defaultPosition(node, index, branches.length)
-            index += 1
-          } else if (!positions[node.id]) {
-            positions[node.id] = defaultPosition(node, 0, branches.length)
+          if (!a || !b || !pa || !pb) {
+            w.g.style.display = 'none';
+            continue;
           }
+
+          w.g.style.display = '';
+
+          const x1 = pa.x + a.offsetWidth / 2;
+          const y1 = pa.y + a.offsetHeight;
+          const x2 = pb.x + b.offsetWidth / 2;
+          const y2 = pb.y;
+          const dy = y2 - y1;
+
+          const c = clamp(
+            Math.abs(dy) * .47,
+            28,
+            115
+          ) * (dy < 0 ? -1 : 1);
+
+          w.path.setAttribute(
+            'd',
+            `M ${x1} ${y1} C ${x1} ${y1 + c} ${x2} ${y2 - c} ${x2} ${y2}`
+          );
+
+          w.a.setAttribute('cx', x1);
+          w.a.setAttribute('cy', y1);
+          w.b.setAttribute('cx', x2);
+          w.b.setAttribute('cy', y2);
         }
+
+        updateWires();
       }
 
-      function timeText(node) {
-        if (node.kind === 'merge') {
-          if (node.status === 'running') {
-            const running = graph.nodes.filter((item) => isBranch(item) && item.status === 'running').length
-            return '等 ' + running + ' 路'
-          }
-          if (node.status === 'failed') return '失败'
-          if (node.status === 'idle') return '—'
-          return Number.isFinite(node.elapsedMs) ? fmtMs(node.elapsedMs) : '—'
-        }
-        if (node.status === 'running') return '运行中'
-        if (node.status === 'failed') return '失败'
-        if (node.status === 'idle') return '—'
-        return Number.isFinite(node.elapsedMs) ? fmtMs(node.elapsedMs) : '—'
-      }
-
-      function subText(node) {
-        if (node.kind === 'merge') return graph.nodes.filter(isBranch).length + ' 路'
-        return node.model || '—'
-      }
-
-      function updateNode(node) {
-        const el = nodes[node.id]
-        if (!el) return
-        el.classList.toggle('running', node.status === 'running')
-        el.classList.toggle('failed', node.status === 'failed')
-        el.classList.toggle('selected', node.id === selectedId)
-        const title = el.querySelector('.jw-node-title')
-        const time = el.querySelector('.jw-node-time')
-        const sub = el.querySelector('.jw-node-sub')
-        if (title) title.textContent = node.title
-        if (time) time.textContent = timeText(node)
-        if (sub) {
-          sub.textContent = subText(node)
-          sub.title = sub.textContent
-        }
-      }
-
-      function makeNode(node) {
-        const el = document.createElement('div')
-        el.className = node.kind === 'merge' ? 'jw-node jw-node-merge' : 'jw-node'
-        el.dataset.id = node.id
-        const top = document.createElement('div')
-        top.className = 'jw-node-top'
-        const title = document.createElement('span')
-        title.className = 'jw-node-title'
-        title.textContent = node.title
-        const time = document.createElement('span')
-        time.className = 'jw-node-time'
-        time.textContent = timeText(node)
-        top.append(title, time)
-        if (isBranch(node)) {
-          const more = document.createElement('button')
-          more.className = 'jw-more'
-          more.type = 'button'
-          more.textContent = '⋯'
-          more.title = '节点操作'
-          more.addEventListener('pointerdown', (event) => event.stopPropagation())
-          more.addEventListener('click', (event) => {
-            event.stopPropagation()
-            openMenu(node.id, more)
-          })
-          top.appendChild(more)
-        }
-        const sub = document.createElement('div')
-        sub.className = 'jw-node-sub'
-        sub.textContent = subText(node)
-        sub.title = sub.textContent
-        el.append(top, sub)
-        el.addEventListener('dblclick', (event) => {
-          event.stopPropagation()
-          if (node.artifact) openPreview(node.id)
-        })
-        return el
-      }
-
-      function buildCanvas(keepPositions) {
-        if (!keepPositions) for (const key of Object.keys(positions)) delete positions[key]
-        world.textContent = ''
-        for (const key of Object.keys(nodes)) delete nodes[key]
-        if (!keepPositions) layoutMissing()
-        else {
-          for (const node of graph.nodes) {
-            if (!positions[node.id]) positions[node.id] = defaultPosition(node, 0, graph.nodes.filter(isBranch).length)
-          }
-        }
-        for (const node of graph.nodes) {
-          const el = makeNode(node)
-          nodes[node.id] = el
-          world.appendChild(el)
-          place(node.id)
-        }
-        renderedIds = graph.nodes.map((node) => node.id).join(',')
-        if (selectedId && !nodes[selectedId]) selectedId = null
-        for (const node of graph.nodes) updateNode(node)
-        requestAnimationFrame(() => {
-          if (destroyed) return
-          drawEdges()
-        })
-      }
-
-      function applyGraph() {
-        const ids = graph.nodes.map((node) => node.id).join(',')
-        if (ids !== renderedIds) {
-          buildCanvas(true)
-          if (autoFit) fit()
-        } else {
-          for (const node of graph.nodes) updateNode(node)
-          drawEdges()
-        }
-      }
-
-      /* ---------------- 选择 / 菜单 ---------------- */
       function select(id) {
-        selectedId = id
-        for (const [key, el] of Object.entries(nodes)) el.classList.toggle('selected', key === id)
+        selected = id;
+
+        for (const [key, el] of Object.entries(elements)) {
+          el.classList.toggle('selected', key === id);
+        }
+
+        updateWires();
+      }
+
+      function rebuild(prune) {
+        endDrag();
+        closeMenu();
+
+        if (prune) {
+          const valid = new Set(graph.nodes.map(n => n.id));
+
+          for (const id of Object.keys(positions)) {
+            if (!valid.has(id)) delete positions[id];
+          }
+        }
+
+        layoutMissing();
+        nodeLayer.textContent = '';
+
+        for (const id of Object.keys(elements)) {
+          delete elements[id];
+        }
+
+        for (const n of graph.nodes) {
+          const el = makeNode(n);
+
+          elements[n.id] = el;
+          nodeLayer.appendChild(el);
+          positionNode(n.id);
+        }
+
+        if (selected && !elements[selected]) selected = null;
+
+        for (const n of graph.nodes) {
+          updateNode(n);
+        }
+
+        idsKey = nodeIds();
+        makeWires();
+      }
+
+      function applyGraph(data) {
+        graph = normalize(data);
+
+        if (nodeIds() !== idsKey) {
+          rebuild(true);
+          if (autoFit) fit();
+        } else {
+          for (const n of graph.nodes) {
+            updateNode(n);
+          }
+
+          if (JSON.stringify(graph.edges) !== edgesKey) {
+            makeWires();
+          } else {
+            updateWires();
+          }
+        }
+
+        if (graph.nodes.some(n => n.status === 'running')) {
+          startPolling();
+        } else {
+          stopPolling();
+        }
       }
 
       function closeMenu() {
-        if (menuEl) {
-          menuEl.remove()
-          menuEl = null
+        if (!menu) return;
+
+        menu.remove();
+        menu = null;
+      }
+
+      function copyText(value) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(value).catch(() => {});
+          return;
+        }
+
+        try {
+          const area = document.createElement('textarea');
+
+          area.value = value;
+          area.style.cssText = 'position:fixed;opacity:0';
+
+          document.body.appendChild(area);
+          area.select();
+
+          document.execCommand('copy');
+          area.remove();
+        } catch (e) {
+          console.warn('[经纬] 复制失败', e);
         }
       }
 
-      function openMenu(nodeId, anchor) {
-        closeMenu()
-        const node = graph.nodes.find((item) => item.id === nodeId)
-        if (!node || !isBranch(node)) return
-        const branchCount = graph.nodes.filter(isBranch).length
-        const items = [
-          { label: '重跑这一路', disabled: node.status === 'running', run: () => rerun(node) },
-          { label: '查看产物', disabled: !node.artifact, run: () => openPreview(node.id) },
-          { label: '复制模型名', disabled: !node.model, run: () => copyText(node.model) },
-          { label: '删除节点', disabled: node.status === 'running' || branchCount <= 1, run: () => removeNode(node.id) },
-        ]
-        const menu = document.createElement('div')
-        menu.className = 'jw-menu'
-        for (const item of items) {
-          const button = document.createElement('button')
-          button.type = 'button'
-          button.textContent = item.label
-          button.disabled = item.disabled
-          button.addEventListener('click', (event) => {
-            event.stopPropagation()
-            closeMenu()
-            if (!item.disabled) item.run()
-          })
-          menu.appendChild(button)
+      function openMenu(id, anchor) {
+        closeMenu();
+
+        if (preview) return;
+
+        const n = getNode(id);
+        if (!n || !branch(n)) return;
+
+        const count = graph.nodes.filter(branch).length;
+
+        const actions = [
+          [
+            '重跑这一路',
+            n.status === 'running' || pending.has(id),
+            () => rerun(id)
+          ],
+          [
+            '查看产物',
+            !n.artifact,
+            () => openPreview(id)
+          ],
+          [
+            '复制模型名',
+            !n.model,
+            () => copyText(n.model)
+          ],
+          [
+            '删除节点',
+            n.status === 'running' || pending.has(id) || count <= 1,
+            () => removeNode(id)
+          ]
+        ];
+
+        const box = document.createElement('div');
+        box.className = 'menu';
+
+        box.setAttribute('role', 'menu');
+        box.setAttribute(
+          'aria-label',
+          n.title + '，节点操作'
+        );
+
+        for (const [label, disabled, action] of actions) {
+          const btn = document.createElement('button');
+
+          btn.type = 'button';
+          btn.setAttribute('role', 'menuitem');
+          btn.textContent = label;
+          btn.disabled = !!disabled;
+
+          btn.addEventListener('click', e => {
+            e.stopPropagation();
+
+            if (disabled) return;
+
+            closeMenu();
+            action();
+          });
+
+          box.appendChild(btn);
         }
-        menu.addEventListener('pointerdown', (event) => event.stopPropagation())
-        viewport.appendChild(menu)
-        const anchorRect = anchor.getBoundingClientRect()
-        const viewportRect = viewport.getBoundingClientRect()
-        const left = clamp(anchorRect.left - viewportRect.left - 104, 8, Math.max(8, viewportRect.width - menu.offsetWidth - 8))
-        const top = clamp(anchorRect.bottom - viewportRect.top + 6, 8, Math.max(8, viewportRect.height - menu.offsetHeight - 8))
-        menu.style.left = left + 'px'
-        menu.style.top = top + 'px'
-        menuEl = menu
+
+        box.addEventListener('pointerdown', e => {
+          e.stopPropagation();
+        });
+
+        stage.appendChild(box);
+
+        const r = anchor.getBoundingClientRect();
+        const s = stage.getBoundingClientRect();
+        const gutter = 12;
+
+        const x = clamp(
+          r.right - s.left - box.offsetWidth + 3,
+          gutter,
+          Math.max(gutter, s.width - box.offsetWidth - gutter)
+        );
+
+        const below = r.bottom - s.top + 9;
+        const above = r.top - s.top - box.offsetHeight - 9;
+
+        const y = below + box.offsetHeight <= s.height - gutter
+          ? below
+          : above >= gutter
+            ? above
+            : clamp(
+              below,
+              gutter,
+              Math.max(gutter, s.height - box.offsetHeight - gutter)
+            );
+
+        box.style.left = x + 'px';
+        box.style.top = y + 'px';
+
+        menu = box;
       }
 
-      /* ---------------- 动作 ---------------- */
-      function copyText(text) {
-        try {
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).catch(() => undefined)
-            return
-          }
-        } catch {
-          /* 忽略 */
-        }
-        try {
-          const area = document.createElement('textarea')
-          area.value = text
-          area.style.position = 'fixed'
-          area.style.opacity = '0'
-          document.body.appendChild(area)
-          area.select()
-          document.execCommand('copy')
-          area.remove()
-        } catch {
-          console.warn('[经纬] 复制失败')
-        }
-      }
+      async function rerun(id) {
+        const n = getNode(id);
 
-      async function rerun(node) {
-        if (node.status === 'running') return
+        if (
+          !n ||
+          !branch(n) ||
+          n.status === 'running' ||
+          pending.has(id)
+        ) return;
+
+        pending.add(id);
+
         try {
-          const response = await fetch('jingwei/actions/rerun', {
+          const res = await fetch('jingwei/actions/rerun', {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ sessionId: sessionId || '', nodeId: node.id }),
-          })
-          if (response.status !== 202) {
-            const detail = await response.text().catch(() => '')
-            console.warn('[经纬] 重跑未接受：' + response.status + ' ' + detail)
-            return
+            headers: {
+              'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+              sessionId: sessionId || '',
+              nodeId: id
+            })
+          });
+
+          if (destroyed) return;
+
+          if (res.status !== 202) {
+            console.warn('[经纬] 重跑未接受', res.status);
+            return;
           }
-          node.status = 'running'
-          node.startedAt = Date.now()
-          node.elapsedMs = undefined
-          updateNode(node)
-          startPolling()
-        } catch (error) {
-          console.warn('[经纬] 重跑请求失败：' + (error && error.message))
+
+          sequence++;
+
+          const current = getNode(id);
+
+          if (current) {
+            current.status = 'running';
+            current.startedAt = Date.now();
+            current.elapsedMs = undefined;
+
+            updateNode(current);
+            updateWires();
+          }
+
+          startPolling();
+        } catch (e) {
+          console.warn('[经纬] 重跑失败', e);
+        } finally {
+          pending.delete(id);
         }
       }
 
-      async function removeNode(nodeId) {
+      async function removeNode(id) {
+        const n = getNode(id);
+
+        if (
+          !n ||
+          !branch(n) ||
+          n.status === 'running' ||
+          graph.nodes.filter(branch).length <= 1
+        ) return;
+
         try {
-          const response = await fetch('jingwei/actions/remove-node', {
+          const res = await fetch('jingwei/actions/remove-node', {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ nodeId }),
-          })
-          if (!response.ok) {
-            console.warn('[经纬] 删除未接受：' + response.status)
-            return
+            headers: {
+              'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+              nodeId: id
+            })
+          });
+
+          if (!res.ok) {
+            throw new Error('HTTP ' + res.status);
           }
-          graph = normalizeGraph(await response.json())
-          applyGraph()
-          if (autoFit) fit()
-        } catch (error) {
-          console.warn('[经纬] 删除失败：' + (error && error.message))
+
+          const data = await res.json();
+
+          if (destroyed) return;
+
+          sequence++;
+
+          closePreview();
+          applyGraph(data);
+        } catch (e) {
+          console.warn('[经纬] 删除失败', e);
         }
       }
 
-      /* ---------------- 产物预览 ---------------- */
-      function artifactUrl(node) {
-        const rel = String(node.artifact || '')
+      function artifactType(n) {
+        if (n.artifactType) {
+          return n.artifactType.toLowerCase();
+        }
+
+        const ext = String(n.artifact || '')
+          .split('.')
+          .pop()
+          .toLowerCase();
+
+        if (['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif'].includes(ext)) {
+          return 'image';
+        }
+
+        if (['html', 'htm'].includes(ext)) {
+          return 'html';
+        }
+
+        return ext === 'json' ? 'json' : 'text';
+      }
+
+      function artifactUrl(n) {
+        const path = String(n.artifact || '')
           .split('/')
-          .map((part) => encodeURIComponent(part))
-          .join('/')
-        return 'jingwei/artifact/' + encodeURIComponent(graph.runId) + '/' + rel
+          .map(x => encodeURIComponent(x))
+          .join('/');
+
+        return 'jingwei/artifact/' +
+          encodeURIComponent(graph.runId) +
+          '/' +
+          path;
       }
 
       function closePreview() {
-        if (previewEl) {
-          previewEl.remove()
-          previewEl = null
-        }
+        if (!preview) return;
+
+        preview.remove();
+        preview = null;
       }
 
-      function openPreview(nodeId) {
-        const node = graph.nodes.find((item) => item.id === nodeId)
-        if (!node || !node.artifact) return
-        closePreview()
-        closeMenu()
-        const overlay = document.createElement('div')
-        overlay.className = 'jw-preview'
-        const top = document.createElement('div')
-        top.className = 'jw-preview-top'
-        const label = document.createElement('span')
-        label.textContent = node.title + ' · Esc'
-        const close = document.createElement('button')
-        close.className = 'jw-preview-close'
-        close.type = 'button'
-        close.textContent = '×'
-        close.addEventListener('click', closePreview)
-        top.append(label, close)
-        const body = document.createElement('div')
-        body.className = 'jw-preview-body'
-        overlay.append(top, body)
-        overlay.addEventListener('pointerdown', (event) => event.stopPropagation())
-        overlay.addEventListener('click', (event) => {
-          if (event.target === overlay || event.target === body) closePreview()
-        })
-        viewport.appendChild(overlay)
-        previewEl = overlay
+      function openPreview(id) {
+        const n = getNode(id);
+        if (!n || !n.artifact) return;
 
-        const url = artifactUrl(node)
-        const kind = artifactKind(node)
-        if (kind === 'image') {
-          const img = document.createElement('img')
-          img.src = url
-          img.alt = node.title
-          body.appendChild(img)
-        } else if (kind === 'html') {
-          const frame = document.createElement('iframe')
-          frame.setAttribute('sandbox', '')
-          frame.src = url
-          body.appendChild(frame)
-        } else {
-          const pre = document.createElement('pre')
-          pre.textContent = '读取产物…'
-          body.appendChild(pre)
-          fetch(url, { cache: 'no-store' })
-            .then((response) => {
-              if (!response.ok) throw new Error('HTTP ' + response.status)
-              return response.text()
-            })
-            .then((text) => {
-              if (kind === 'json') {
-                try {
-                  text = JSON.stringify(JSON.parse(text), null, 2)
-                } catch {
-                  /* 保留原文 */
-                }
-              }
-              pre.textContent = text
-            })
-            .catch((error) => {
-              pre.textContent = '读取失败：' + (error && error.message)
-            })
-        }
-      }
+        closeMenu();
+        closePreview();
 
-      /* ---------------- 轮询 ---------------- */
-      function stopPolling() {
-        if (pollTimer) {
-          clearInterval(pollTimer)
-          pollTimer = 0
-        }
-      }
+        const layer = document.createElement('div');
+        layer.className = 'preview';
 
-      function startPolling() {
-        if (pollTimer) return
-        pollTimer = setInterval(async () => {
-          try {
-            const response = await fetch('jingwei/data/graph.json', { cache: 'no-store' })
-            if (!response.ok) return
-            graph = normalizeGraph(await response.json())
-            applyGraph()
-            if (!graph.nodes.some((node) => node.status === 'running')) stopPolling()
-          } catch {
-            /* 下一轮再试 */
+        layer.setAttribute('role', 'dialog');
+        layer.setAttribute(
+          'aria-label',
+          n.title + '，产物预览'
+        );
+
+        const head = document.createElement('div');
+        head.className = 'preview-head';
+
+        const label = document.createElement('div');
+        label.className = 'preview-label';
+
+        const kicker = document.createElement('span');
+        kicker.className = 'preview-kicker';
+        kicker.textContent = '产物预览  /  ESC 关闭';
+
+        const title = document.createElement('span');
+        title.className = 'preview-title';
+        title.textContent = n.title;
+
+        label.append(kicker, title);
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'preview-close';
+        close.textContent = '×';
+        close.setAttribute('aria-label', '关闭预览');
+        close.addEventListener('click', closePreview);
+
+        head.append(label, close);
+
+        const content = document.createElement('div');
+        content.className = 'preview-content';
+
+        layer.append(head, content);
+
+        layer.addEventListener('pointerdown', e => {
+          e.stopPropagation();
+        });
+
+        layer.addEventListener('click', e => {
+          if (e.target === layer || e.target === content) {
+            closePreview();
           }
-        }, 1200)
+        });
+
+        stage.appendChild(layer);
+        preview = layer;
+
+        const url = artifactUrl(n);
+        const type = artifactType(n);
+
+        if (
+          type === 'image' ||
+          ['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif'].includes(type)
+        ) {
+          const img = document.createElement('img');
+
+          img.src = url;
+          img.alt = n.title;
+
+          img.onerror = () => {
+            if (preview !== layer) return;
+
+            content.classList.add('text');
+
+            const pre = document.createElement('pre');
+            pre.textContent = '图片读取失败';
+
+            img.replaceWith(pre);
+          };
+
+          content.appendChild(img);
+        } else if (type === 'html') {
+          const iframe = document.createElement('iframe');
+
+          iframe.setAttribute('sandbox', '');
+          iframe.setAttribute(
+            'title',
+            n.title + '，HTML 预览'
+          );
+
+          iframe.src = url;
+          content.appendChild(iframe);
+        } else {
+          content.classList.add('text');
+
+          const pre = document.createElement('pre');
+          pre.textContent = '读取产物…';
+
+          content.appendChild(pre);
+
+          fetch(url, { cache: 'no-store' })
+            .then(res => {
+              if (!res.ok) {
+                throw new Error('HTTP ' + res.status);
+              }
+
+              return res.text();
+            })
+            .then(text => {
+              if (destroyed || preview !== layer) return;
+
+              if (type === 'json') {
+                try {
+                  text = JSON.stringify(JSON.parse(text), null, 2);
+                } catch (e) {}
+              }
+
+              pre.textContent = text;
+            })
+            .catch(e => {
+              if (!destroyed && preview === layer) {
+                pre.textContent = '读取失败：' + e.message;
+              }
+            });
+        }
       }
 
-      /* ---------------- 载入 ---------------- */
-      async function getJson(url) {
-        const response = await fetch(url, { cache: 'no-store' })
-        if (!response.ok) throw new Error(url + ' HTTP ' + response.status)
-        return response.json()
+      async function getJSON(url) {
+        const res = await fetch(url, {
+          cache: 'no-store'
+        });
+
+        if (!res.ok) {
+          throw new Error(url + ' HTTP ' + res.status);
+        }
+
+        return res.json();
       }
 
       async function loadView() {
         try {
-          const data = await getJson('jingwei/data/view.json')
-          const saved = data && typeof data.positions === 'object' ? data.positions : {}
-          for (const [id, point] of Object.entries(saved)) {
-            const x = Number(point?.x)
-            const y = Number(point?.y)
-            if (Number.isFinite(x) && Number.isFinite(y)) positions[id] = { x, y }
+          const data = await getJSON('jingwei/data/view.json');
+
+          if (destroyed) return;
+
+          const saved = data &&
+            data.positions &&
+            typeof data.positions === 'object'
+              ? data.positions
+              : {};
+
+          for (const [id, p] of Object.entries(saved)) {
+            if (!p) continue;
+
+            const x = Number(p.x);
+            const y = Number(p.y);
+
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+              positions[id] = { x, y };
+            }
           }
-        } catch {
-          /* 没存过位置 */
+        } catch (e) {}
+      }
+
+      async function reload(silent) {
+        const current = ++sequence;
+
+        try {
+          const data = await getJSON('jingwei/data/graph.json');
+
+          if (!destroyed && current === sequence) {
+            applyGraph(data);
+          }
+        } catch (e) {
+          if (!silent && !destroyed) {
+            console.warn('[经纬] 读取失败', e);
+          }
         }
       }
 
-      async function reloadGraph() {
-        try {
-          graph = normalizeGraph(await getJson('jingwei/data/graph.json'))
-          applyGraph()
-          if (autoFit) fit()
-          if (graph.nodes.some((node) => node.status === 'running')) startPolling()
-        } catch (error) {
-          console.warn('[经纬] 刷新失败，保留当前画布：' + (error && error.message))
-        }
+      function stopPolling() {
+        if (poll) clearInterval(poll);
+        poll = 0;
+      }
+
+      function startPolling() {
+        if (poll || destroyed) return;
+
+        poll = setInterval(() => {
+          if (pollingBusy) return;
+
+          pollingBusy = true;
+
+          reload(true).finally(() => {
+            pollingBusy = false;
+          });
+        }, 1200);
       }
 
       function saveView() {
-        if (saveTimer) clearTimeout(saveTimer)
+        if (saveTimer) clearTimeout(saveTimer);
+
         saveTimer = setTimeout(() => {
-          const payload = {}
-          for (const [id, point] of Object.entries(positions)) payload[id] = point
+          saveTimer = 0;
+          if (destroyed) return;
+
+          const data = {};
+
+          for (const [id, p] of Object.entries(positions)) {
+            data[id] = { x: p.x, y: p.y };
+          }
+
           fetch('jingwei/actions/save-view', {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ positions: payload }),
-          }).catch(() => undefined)
-        }, 450)
+            headers: {
+              'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+              positions: data
+            })
+          }).catch(() => {});
+        }, 450);
       }
 
-      /* ---------------- 指针 ---------------- */
-      function endDrag() {
-        if (!drag) return
-        if (drag.el) drag.el.classList.remove('dragging')
-        viewport.classList.remove('panning')
-        if (drag.mode === 'node' && drag.moved) saveView()
-        drag = null
-      }
+      function endDrag(e) {
+        if (!drag || (e && e.pointerId !== drag.pointerId)) return;
 
-      on(viewport, 'pointerdown', (event) => {
-        if (event.button !== 0) return
-        if (previewEl) return
-        closeMenu()
-        const nodeEl = event.target.closest && event.target.closest('.jw-node')
-        try {
-          viewport.setPointerCapture(event.pointerId)
-        } catch {
-          /* 旧浏览器 */
+        const d = drag;
+
+        if (d.el) d.el.classList.remove('dragging');
+
+        stage.classList.remove('panning');
+        drag = null;
+
+        if (d.mode === 'node' && d.moved) {
+          saveView();
         }
-        if (nodeEl && nodeEl.dataset.id) {
-          const id = nodeEl.dataset.id
-          select(id)
+      }
+
+      listen(stage, 'pointerdown', e => {
+        if (e.button !== 0 || preview) return;
+        if (e.target.closest('.menu,.more')) return;
+
+        closeMenu();
+        stopMotion();
+
+        const el = e.target.closest('.node');
+
+        if (el && positions[el.dataset.id]) {
+          const id = el.dataset.id;
+
+          select(id);
+
           drag = {
+            pointerId: e.pointerId,
             mode: 'node',
             id,
-            el: nodeEl,
-            sx: event.clientX,
-            sy: event.clientY,
+            el,
+            sx: e.clientX,
+            sy: e.clientY,
             ox: positions[id].x,
             oy: positions[id].y,
-            moved: false,
-          }
-          nodeEl.classList.add('dragging')
+            moved: false
+          };
         } else {
-          select(null)
-          drag = { mode: 'pan', sx: event.clientX, sy: event.clientY, ox: view.x, oy: view.y, moved: false }
-          viewport.classList.add('panning')
+          select(null);
+
+          drag = {
+            pointerId: e.pointerId,
+            mode: 'pan',
+            sx: e.clientX,
+            sy: e.clientY,
+            ox: view.x,
+            oy: view.y,
+            moved: false
+          };
         }
-      })
+      });
 
-      on(viewport, 'pointermove', (event) => {
-        if (!drag) return
-        const dx = event.clientX - drag.sx
-        const dy = event.clientY - drag.sy
-        if (!drag.moved && Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true
-        if (drag.mode === 'pan') {
-          view.x = drag.ox + dx
-          view.y = drag.oy + dy
-          autoFit = false
-          applyView()
-        } else {
-          positions[drag.id].x = drag.ox + dx / view.k
-          positions[drag.id].y = drag.oy + dy / view.k
-          place(drag.id)
-          drawEdges()
+      listen(stage, 'pointermove', e => {
+        if (!drag || e.pointerId !== drag.pointerId) return;
+
+        const dx = e.clientX - drag.sx;
+        const dy = e.clientY - drag.sy;
+
+        if (!drag.moved && Math.abs(dx) + Math.abs(dy) <= 3) {
+          return;
         }
-      })
 
-      on(viewport, 'pointerup', endDrag)
-      on(viewport, 'pointercancel', endDrag)
+        if (!drag.moved) {
+          drag.moved = true;
 
-      on(viewport, 'wheel', (event) => {
-        event.preventDefault()
-        if (previewEl) return
-        closeMenu()
-        const rect = viewport.getBoundingClientRect()
-        const mx = event.clientX - rect.left
-        const my = event.clientY - rect.top
-        const wx = (mx - view.x) / view.k
-        const wy = (my - view.y) / view.k
-        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1
-        const next = clamp(view.k * Math.exp(-event.deltaY * unit * 0.0015), MIN_K, MAX_K)
-        if (next === view.k) return
-        autoFit = false
-        view.k = next
-        view.x = mx - wx * next
-        view.y = my - wy * next
-        applyView()
-      }, { passive: false })
-
-      on(viewport, 'dblclick', (event) => {
-        if (previewEl) return
-        if (event.target.closest && event.target.closest('.jw-node')) return
-        fit()
-      })
-
-      /* ---------------- 键盘 ---------------- */
-      function isVisible() {
-        if (destroyed || !host.isConnected) return false
-        if (!viewport.clientWidth || !viewport.clientHeight) return false
-        if (viewport.closest('[hidden], [inert]')) return false
-        if (viewport.closest('[aria-hidden="true"]')) return false
-        const style = window.getComputedStyle(viewport)
-        return style.display !== 'none' && style.visibility !== 'hidden'
-      }
-
-      on(window, 'keydown', (event) => {
-        const target = event.target
-        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' || target.isContentEditable === true)) return
-        if (event.ctrlKey || event.metaKey || event.altKey) return
-        if (!isVisible()) return
-        if (event.key === 'Escape') {
-          if (previewEl) {
-            closePreview()
-            event.preventDefault()
-          } else if (menuEl) {
-            closeMenu()
-            event.preventDefault()
-          } else if (selectedId) {
-            select(null)
-            event.preventDefault()
-          }
-          return
-        }
-        if (previewEl) return
-        if (event.key === 'r' || event.key === 'R') {
-          event.preventDefault()
-          reloadGraph()
-        } else if (event.key === 'f' || event.key === 'F' || event.key === '0') {
-          event.preventDefault()
-          fit()
-        } else if (event.key === 'Enter') {
-          const node = graph.nodes.find((item) => item.id === selectedId)
-          if (node && isBranch(node) && node.status !== 'running') {
-            event.preventDefault()
-            rerun(node)
-          }
-        }
-      })
-
-      /* ---------------- 尺寸 ---------------- */
-      function onResize() {
-        if (destroyed) return
-        if (autoFit) fit()
-        else drawEdges()
-      }
-      if (typeof ResizeObserver === 'function') {
-        const observer = new ResizeObserver(onResize)
-        observer.observe(viewport)
-        disposers.push(() => observer.disconnect())
-      }
-      on(window, 'resize', onResize)
-
-      /* ---------------- 启动 ---------------- */
-      ;(async () => {
-        await loadView()
-        if (destroyed) return
-        buildCanvas(false)
-        requestAnimationFrame(() => {
-          if (destroyed) return
-          fit()
-          reloadGraph()
-          if (graph.nodes.some((node) => node.status === 'running')) startPolling()
-        })
-      })()
-
-      return function teardown() {
-        destroyed = true
-        endDrag()
-        closeMenu()
-        closePreview()
-        stopPolling()
-        if (saveTimer) clearTimeout(saveTimer)
-        disposers.forEach((fn) => {
           try {
-            fn()
-          } catch {
-            /* 忽略 */
+            stage.setPointerCapture(e.pointerId);
+          } catch (error) {}
+
+          if (drag.el) {
+            drag.el.classList.add('dragging');
+          } else {
+            stage.classList.add('panning');
           }
-        })
-        disposers.length = 0
+        }
+
+        if (drag.mode === 'node') {
+          const p = positions[drag.id];
+          if (!p) return;
+
+          autoFit = false;
+
+          p.x = drag.ox + dx / view.k;
+          p.y = drag.oy + dy / view.k;
+
+          positionNode(drag.id);
+          drawEdges();
+        } else {
+          autoFit = false;
+
+          view.x = drag.ox + dx;
+          view.y = drag.oy + dy;
+
+          drawView();
+        }
+      });
+
+      listen(stage, 'pointerup', endDrag);
+      listen(stage, 'pointercancel', endDrag);
+      listen(stage, 'lostpointercapture', endDrag);
+
+      listen(stage, 'wheel', e => {
+        e.preventDefault();
+
+        if (preview) return;
+
+        closeMenu();
+        stopMotion();
+
+        const r = stage.getBoundingClientRect();
+        const mx = e.clientX - r.left;
+        const my = e.clientY - r.top;
+
+        const wx = (mx - view.x) / view.k;
+        const wy = (my - view.y) / view.k;
+
+        const unit = e.deltaMode === 1
+          ? 16
+          : e.deltaMode === 2
+            ? stage.clientHeight
+            : 1;
+
+        const k = clamp(
+          view.k * Math.exp(-e.deltaY * unit * .0015),
+          MIN,
+          MAX
+        );
+
+        if (k === view.k) return;
+
+        autoFit = false;
+
+        view.k = k;
+        view.x = mx - wx * k;
+        view.y = my - wy * k;
+
+        drawView();
+      }, { passive: false });
+
+      listen(stage, 'dblclick', e => {
+        if (preview || menu || e.target.closest('.node')) return;
+        fit();
+      });
+
+      function visible() {
+        if (
+          destroyed ||
+          !host.isConnected ||
+          !stage.clientWidth ||
+          !stage.clientHeight
+        ) return false;
+
+        let el = host;
+
+        while (el && el.nodeType === 1) {
+          if (
+            el.hidden ||
+            el.inert ||
+            el.getAttribute('aria-hidden') === 'true'
+          ) return false;
+
+          const style = getComputedStyle(el);
+
+          if (
+            style.display === 'none' ||
+            style.visibility === 'hidden'
+          ) return false;
+
+          el = el.parentElement;
+        }
+
+        return true;
       }
+
+      listen(window, 'keydown', e => {
+        const t = e.target;
+
+        if (
+          t &&
+          (
+            ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) ||
+            t.isContentEditable
+          )
+        ) return;
+
+        if (
+          e.ctrlKey ||
+          e.metaKey ||
+          e.altKey ||
+          !visible()
+        ) return;
+
+        if (e.key === 'Escape') {
+          if (preview) {
+            closePreview();
+            e.preventDefault();
+          } else if (menu) {
+            closeMenu();
+            e.preventDefault();
+          } else if (selected) {
+            select(null);
+            e.preventDefault();
+          }
+
+          return;
+        }
+
+        if (preview) return;
+
+        if (
+          e.key === 'f' ||
+          e.key === 'F' ||
+          e.key === '0'
+        ) {
+          e.preventDefault();
+          closeMenu();
+          fit();
+        } else if (
+          e.key === 'r' ||
+          e.key === 'R'
+        ) {
+          e.preventDefault();
+          closeMenu();
+          reload(false);
+        } else if (e.key === 'Enter' && !menu) {
+          const n = getNode(selected);
+
+          if (
+            n &&
+            branch(n) &&
+            n.status !== 'running'
+          ) {
+            e.preventDefault();
+            rerun(n.id);
+          }
+        }
+      });
+
+      const resize = () => {
+        if (destroyed) return;
+
+        if (autoFit) {
+          fit();
+        } else {
+          drawEdges();
+        }
+      };
+
+      if (typeof ResizeObserver === 'function') {
+        const observer = new ResizeObserver(resize);
+
+        observer.observe(stage);
+        listeners.push(() => observer.disconnect());
+      }
+
+      listen(window, 'resize', resize);
+
+      (async () => {
+        await loadView();
+
+        if (destroyed) return;
+
+        rebuild(false);
+
+        requestAnimationFrame(() => {
+          if (destroyed) return;
+
+          fit();
+          reload(false);
+        });
+      })();
+
+      return () => {
+        destroyed = true;
+
+        stopMotion();
+        endDrag();
+        closeMenu();
+        closePreview();
+        stopPolling();
+
+        sequence++;
+
+        if (saveTimer) clearTimeout(saveTimer);
+
+        for (const off of listeners) {
+          try {
+            off();
+          } catch (e) {}
+        }
+
+        listeners.length = 0;
+      };
     }
 
-    /* ---------------- React 宿主 ---------------- */
     function Body(props) {
-      const hostRef = React.useRef(null)
-      const sessionId = props && props.sessionId ? String(props.sessionId) : ''
+      const ref = React.useRef(null);
+      const sessionId = props && props.sessionId
+        ? String(props.sessionId)
+        : '';
+
       React.useEffect(() => {
-        const host = hostRef.current
-        if (!host) return undefined
-        const shadow = host.shadowRoot || host.attachShadow({ mode: 'open' })
-        shadow.innerHTML = '<style>' + CSS + '</style>' + HTML
-        const teardown = createController(host, shadow, sessionId)
+        const host = ref.current;
+        if (!host) return undefined;
+
+        const shadow = host.shadowRoot ||
+          host.attachShadow({ mode: 'open' });
+
+        shadow.innerHTML = '<style>' + CSS + '</style>' + HTML;
+
+        const cleanup = createCanvas(host, shadow, sessionId);
+
         return () => {
-          try {
-            teardown()
-          } catch (error) {
-            console.warn('[经纬] 清理失败', error)
-          }
-          shadow.innerHTML = ''
-        }
-      }, [sessionId])
+          cleanup();
+          shadow.innerHTML = '';
+        };
+      }, [sessionId]);
+
       return React.createElement('div', {
+        ref,
         'data-jingwei-host': '',
-        ref: hostRef,
         style: {
           display: 'block',
           width: '100%',
           height: '100%',
           minWidth: 0,
           minHeight: 0,
-          overflow: 'hidden',
-        },
-      })
+          overflow: 'hidden'
+        }
+      });
     }
 
-    /* ---------------- 插件入口 ---------------- */
     return {
       inject: ['slots', 'sidebarRightTabs'],
-      apply(ctx) {
-        ctx.effect(() => ctx.sidebarRightTabs.register({
-          id: 'local.jingwei',
-          kind: 'jingwei',
-          priority: 'extension',
-          title: () => '经纬',
-          guide: [{
-            id: 'canvas',
-            order: 20,
-            title: () => '经纬画布',
-            description: () => '黑白无限画布',
-          }],
-        }), 'jingwei: sidebar-right tab type')
 
-        ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-          name: 'sidebar.right.pane.tab',
-          key: 'local.jingwei',
-        }, Body)), 'jingwei: sidebar-right tab body')
-      },
-    }
-  },
-})
+      apply(ctx) {
+        ctx.effect(
+          () => ctx.sidebarRightTabs.register({
+            id: 'local.jingwei',
+            kind: 'jingwei',
+            priority: 'extension',
+            title: () => '经纬',
+            guide: [{
+              id: 'canvas',
+              order: 20,
+              title: () => '经纬画布',
+              description: () => '黑白无限画布'
+            }]
+          }),
+          'jingwei: sidebar-right tab type'
+        );
+
+        ctx.effect(
+          () => ctx.slots.inject(
+            'sidebar.right.pane.tab',
+            () => ctx.slots.register({
+              name: 'sidebar.right.pane.tab',
+              key: 'local.jingwei'
+            }, Body)
+          ),
+          'jingwei: sidebar-right tab body'
+        );
+      }
+    };
+  }
+});

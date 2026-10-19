@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="经纬">
+  <defs>
+    <linearGradient id="jw-warp" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4C9AFF" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#4C9AFF"/>
+    </linearGradient>
+    <linearGradient id="jw-weft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#46A758" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#46A758"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="#151A21" stroke="#272E38"/>
+  <g stroke="url(#jw-warp)" stroke-width="2.4" stroke-linecap="round">
+    <path d="M18 12v40"/><path d="M26 12v40"/><path d="M34 12v40"/><path d="M42 12v40"/><path d="M50 12v40"/>
+  </g>
+  <g stroke="url(#jw-weft)" stroke-width="2.4" stroke-linecap="round">
+    <path d="M10 22h44"/><path d="M10 31h44"/><path d="M10 40h44"/>
+  </g>
+  <g fill="#E7ECF3">
+    <circle cx="18" cy="22" r="2.6"/><circle cx="34" cy="31" r="2.6"/><circle cx="50" cy="40" r="2.6"/>
+  </g>
+</svg>

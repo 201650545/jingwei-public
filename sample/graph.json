@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "runId": "demo-run-001",
+  "nodes": [
+    {
+      "id": "copy",
+      "kind": "branch",
+      "title": "Copy",
+      "provider": "provider",
+      "model": "model-a",
+      "status": "done",
+      "elapsedMs": 169270,
+      "artifact": "copy/note.json",
+      "artifactType": "json"
+    },
+    {
+      "id": "design",
+      "kind": "branch",
+      "title": "Design",
+      "provider": "provider",
+      "model": "model-b",
+      "status": "done",
+      "elapsedMs": 222646,
+      "artifact": "design/note.html",
+      "artifactType": "html"
+    },
+    {
+      "id": "merge",
+      "kind": "merge",
+      "title": "Merge",
+      "status": "done",
+      "elapsedMs": 222646
+    }
+  ],
+  "edges": [
+    ["copy", "merge"],
+    ["design", "merge"]
+  ]
+}

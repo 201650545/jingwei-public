@@ -1,0 +1,32 @@
+{
+  "name": "@local/jingwei",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "经纬 · 黑白无限画布：把一次真跑的 DAG 画在 DSH 右栏，可拖、可平移、可缩放。",
+  "meta": {
+    "title": "经纬 · 无限画布",
+    "description": "黑白极简 DAG 画布：节点可拖，空白可平移，滚轮缩放。"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-sidebar-right"]
+    }
+  }
+}

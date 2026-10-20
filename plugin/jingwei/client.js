@@ -1313,7 +1313,12 @@ function createCanvas(host, shadow, sessionId) {
 
         el.append(role, title, status, sep, verdicts, meta);
 
-        if (branch(n)) {
+        // ⚠️ 2026-10-20 修：**所有节点**都必须有操作入口。
+        //   原来这里写的是 if (branch(n))，而 branch = kind !== 'merge' ⇒
+        //   merge 节点根本没有 ⋯ 按钮；偏偏「导出发布包 / 归档本轮」当时
+        //   只写在 merge 的菜单分支里 ⇒ 这两个功能从 UI 上永远点不到。
+        //   用裸块保住 more 的块级作用域，行为与原来一致。
+        {
           const more = document.createElement('button');
 
           more.type = 'button';
@@ -1756,6 +1761,18 @@ function createCanvas(host, shadow, sessionId) {
         const count = graph.nodes.filter(branch).length;
 
         const runAction = (label, disabled, action) => [label, disabled, action];
+
+        // 「导出发布包 / 归档本轮」是**运行级**动作，语义上属于「把成果交出去」的终点，
+        // 所以挂在 output 节点上（2026-10-20 修：原来只挂在 merge 里，而 merge 没有 ⋯ 入口）。
+        // 没有 merge 节点的图（例如生图冒烟那种 intake → art → output）同样能用到。
+        const runActions = [];
+        if (roleOf(n) === 'output' && graph.runId) {
+          runActions.push(
+            runAction('导出发布包', false, () => publishRun()),
+            runAction('归档本轮', false, () => archiveRun())
+          );
+        }
+
         const actions = branch(n)
           ? [
               runAction('重跑这一路', n.status === 'running' || pending.has(id), () => {
@@ -1771,7 +1788,8 @@ function createCanvas(host, shadow, sessionId) {
                 reviewNode(id, 'rejected', note);
               }),
               runAction('复制模型名', !n.model, () => copyText(n.model)),
-              runAction('删除节点', n.status === 'running' || pending.has(id) || count <= 1, () => removeNode(id))
+              runAction('删除节点', n.status === 'running' || pending.has(id) || count <= 1, () => removeNode(id)),
+              ...runActions
             ]
           : [
               runAction('查看产物', !n.artifact, () => openPreview(id)),
@@ -1781,8 +1799,7 @@ function createCanvas(host, shadow, sessionId) {
                 if (note === null) return;
                 reviewNode(id, 'rejected', note);
               }),
-              runAction('导出发布包', !graph.runId, () => publishRun()),
-              runAction('归档本轮', !graph.runId, () => archiveRun())
+              ...runActions
             ];
 
         const box = document.createElement('div');

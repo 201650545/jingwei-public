@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 经纬 · Host 半边（v0.2）
  *
  * 职责：
@@ -15,6 +15,7 @@
  *   POST /jingwei/actions/rerun              {sessionId,nodeId} 只重跑这一路
  *   POST /jingwei/actions/remove-node         {nodeId}
  *   POST /jingwei/actions/save-view           {positions}
+ *   POST /jingwei/actions/open-external       {runId,path} 用系统默认浏览器打开本轮产物
  *
  * 重跑：用宿主已有的 subagents 服务（spawn provider）在**当前 GUI 会话**下起一个
  * 子 Agent，只跑这一路；delivery=caller，结果不回灌主对话。耗时只认子会话日志里的
@@ -22,17 +23,21 @@
  */
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, dirname, resolve, sep } from 'node:path'
+import { join, dirname, resolve, sep, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { spawn } from 'node:child_process'
 import zlib from 'node:zlib'
+import { runTask, runPlan, runSubgraph, publishRun, archiveRun, withGraphLock } from './orchestrator-v4.js'
+import { getModelData } from './modelpanel-data3.js'
+import { registerProbe } from './probe.js'
 
 export const name = 'jingwei'
 
 /** 重跑依赖宿主已有的 Agent / 子 Agent 服务；缺了就不激活。 */
 export const inject = ['webServer', 'agents', 'subagents']
 
-const ROOT = process.env.JINGWEI_HOME ?? '/workspace/jingwei'
+const ROOT = process.env.JINGWEI_HOME ?? 'D:\\Work\\经纬'
 const DATA_DIR = join(ROOT, 'app', 'data')
 const ASSET_DIR = join(ROOT, 'app', 'assets')
 const ARTIFACT_DIR = join(ROOT, 'artifacts')
@@ -58,6 +63,37 @@ const TYPES = {
 
 const RERUN_TIMEOUT_MS = 15 * 60 * 1000
 let rerunningNode = null
+let runningTask = false
+
+/**
+ * 编排默认路由。
+ *
+ * 2026-10-20 变更：planner 主路由从 local-gateway/high 换成 buddy2api/workbuddy/deepseek-v4.1-flash。
+ * 依据：01:45~01:53 那次 planner 失败的取证显示，local-gateway(:3100) 的**外网聚合渠道整层挂**
+ *（openrouter 超时 / modelscope has no provider supported / SSL 证书失败），而 worker 走的
+ * buddy2api(:8787，本地凭据网关) 没受影响。规划器放在最不稳定的路由上 = 一有外网波动就断链。
+ * 兜底仍保留 local-gateway/high；两条线都失败时把 stopReason/diagnostic 落盘再报错。
+ */
+const ORCHESTRATOR = {
+  planner: {
+    provider: process.env.JINGWEI_PLANNER_PROVIDER ?? 'buddy2api',
+    model: process.env.JINGWEI_PLANNER_MODEL ?? 'workbuddy/deepseek-v4.1-flash',
+  },
+  // 规划器兜底：主路由失败（上游 error / 空输出）时换一条线
+  plannerFallback: {
+    provider: process.env.JINGWEI_PLANNER_FALLBACK_PROVIDER ?? 'local-gateway',
+    model: process.env.JINGWEI_PLANNER_FALLBACK_MODEL ?? 'high',
+  },
+  worker: {
+    // 2026-10-20 同样从 local-gateway/high 换成 buddy2api 线。
+    // 依据：10:31 那轮实测 9 个节点全部走 local-gateway/high，结果整链 502
+    // （modelscope "Model id deepseek-ai/DeepSeek-V4.1-Flash has no provider supported"
+    //   | xiaohongshu capability_mismatch tools）——外网聚合层又挂了。
+    // worker 是「每轮必跑、失败即全链断」的角色，不能挂在会随外网波动整层挂的网关上。
+    provider: process.env.JINGWEI_WORKER_PROVIDER ?? 'buddy2api',
+    model: process.env.JINGWEI_WORKER_MODEL ?? 'workbuddy/deepseek-v4.1-flash',
+  },
+}
 
 /* ---------------- 基础 ---------------- */
 
@@ -384,16 +420,164 @@ async function handleSaveView(req, res) {
     positions[id] = { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 }
   }
   try {
-    await writeFile(join(DATA_DIR, 'view.json'), JSON.stringify({ positions }, null, 2) + '\n', 'utf8')
+    // layoutVersion（2026-10-20 GPT-6 Sol 第 3 轮 §⑦）：
+    //   记录**这批坐标是按哪一版版式算出来的**。
+    //   缺版本标记的旧文件只判「版本未知」，不能武断认定是旧版式；
+    //   客户端据此决定要不要提示"检测到节点布局重叠，可按新版式重排"。
+    const layoutVersion = String(body?.layoutVersion || '').slice(0, 16)
+    await writeFile(
+      join(DATA_DIR, 'view.json'),
+      JSON.stringify({ positions, layoutVersion }, null, 2) + '\n',
+      'utf8'
+    )
   } catch {
     return sendJson(res, 500, { error: 'write failed' })
   }
   sendJson(res, 200, { saved: Object.keys(positions).length })
 }
 
+/**
+ * 用系统默认浏览器打开某轮的产物（2026-10-20 GPT-6 评审 P1：画布里看缩略，浏览器里看完整交互）。
+ * 安全边界：只允许打开 `artifacts/<runId>/` 目录下的文件，runId 走白名单正则、路径做穿越校验。
+ */
+async function handleOpenExternal(req, res) {
+  let body
+  try {
+    body = await readBody(req)
+  } catch {
+    return sendJson(res, 400, { error: 'bad body' })
+  }
+  const runId = String(body?.runId || '')
+  const relPath = String(body?.path || '')
+  if (!runId || !relPath) return sendJson(res, 400, { error: 'runId 与 path 必填' })
+  if (!NODE_ID.test(runId)) return sendJson(res, 400, { error: 'runId 非法' })
+  const root = resolve(ARTIFACT_DIR, runId)
+  const target = resolve(root, relPath)
+  if (target !== root && !target.startsWith(root + sep)) {
+    return sendJson(res, 403, { error: '路径超出本轮产物目录' })
+  }
+  if (!existsSync(target)) return sendJson(res, 404, { error: '产物不存在' })
+  try {
+    // Windows：用系统默认程序打开（start 会把第一个引号后的内容当标题，故传空标题）
+    spawn('cmd', ['/c', 'start', '', target], { detached: true, stdio: 'ignore' }).unref()
+  } catch (error) {
+    return sendJson(res, 500, { error: 'open failed: ' + (error?.message || error) })
+  }
+  sendJson(res, 200, { ok: true, path: relative(ROOT, target) })
+}
+
+async function handleDispatch(agents, subagents, req, res) {
+  let body
+  try {
+    body = await readBody(req, 32 * 1024)
+  } catch {
+    return sendJson(res, 400, { error: 'bad body' })
+  }
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+  const text = typeof body.text === 'string' ? body.text.trim() : ''
+  if (!sessionId || !text) return sendJson(res, 400, { error: 'sessionId/text required' })
+  if (text.length > 4000) return sendJson(res, 400, { error: 'text too long' })
+  const parent = agents.get(sessionId)
+  if (parent === undefined) return sendJson(res, 409, { error: 'session is not live' })
+  if (runningTask) return sendJson(res, 409, { error: 'task already running' })
+
+  runningTask = true
+  sendJson(res, 202, { accepted: true })
+  runTask({
+    subagents,
+    parent,
+    text,
+    style: String(body.style || ''),
+    dataDir: DATA_DIR,
+    artifactRoot: ARTIFACT_DIR,
+    plannerDefaults: ORCHESTRATOR.planner,
+    plannerFallbackDefaults: ORCHESTRATOR.plannerFallback,
+    workerDefaults: ORCHESTRATOR.worker,
+  })
+    .catch(async (error) => {
+      try {
+        const graph = await readGraph()
+        graph.error = String(error && error.message ? error.message : error)
+        graph.updatedAt = new Date().toISOString()
+        await writeGraph(graph)
+      } catch {
+        /* 写不进就算了 */
+      }
+    })
+    .finally(() => {
+      runningTask = false
+    })
+}
+
+
+async function handleReview(req, res) {
+  let body
+  try { body = await readBody(req) } catch { return sendJson(res, 400, { error: 'bad body' }) }
+  const nodeId = String(body.nodeId || '')
+  const status = String(body.status || '')
+  if (!NODE_ID.test(nodeId) || !['accepted', 'rejected', 'pending'].includes(status)) return sendJson(res, 400, { error: 'nodeId/status required' })
+  // `review` 是**机器**判定（pass/fail/unknown，取核查产物首行）；
+  // 人工评审另写 `humanReview`（accepted/rejected/pending）。两套语义不能挤在一个字段上。
+  await withGraphLock(async () => {
+    const graph = await readGraph()
+    const node = graph.nodes.find((item) => item.id === nodeId)
+    if (!node) return
+    node.humanReview = status
+    node.reviewNote = String(body.note || '')
+    node.reviewedAt = new Date().toISOString()
+    await writeGraph(graph)
+  })
+  sendJson(res, 200, { ok: true, nodeId, status })
+}
+
+async function handleRerunSubgraph(agents, subagents, req, res) {
+  let body
+  try { body = await readBody(req) } catch { return sendJson(res, 400, { error: 'bad body' }) }
+  const sessionId = String(body.sessionId || '')
+  const nodeId = String(body.nodeId || '')
+  const parent = agents.get(sessionId)
+  if (!parent) return sendJson(res, 409, { error: 'session is not live' })
+  if (runningTask) return sendJson(res, 409, { error: 'task already running' })
+  runningTask = true
+  sendJson(res, 202, { accepted: true, nodeId })
+  runSubgraph({ subagents, parent, dataDir: DATA_DIR, artifactRoot: ARTIFACT_DIR, nodeId, note: String(body.note || ''), workerDefaults: ORCHESTRATOR.worker })
+    .catch(async (error) => {
+      try { const graph = await readGraph(); graph.error = String(error && error.message ? error.message : error); await writeGraph(graph) } catch {}
+    })
+    .finally(() => { runningTask = false })
+}
+
+async function handlePublish(req, res) {
+  let body
+  try { body = await readBody(req) } catch { return sendJson(res, 400, { error: 'bad body' }) }
+  const runId = String(body.runId || '')
+  if (!RUN_ID.test(runId)) return sendJson(res, 400, { error: 'runId required' })
+  try {
+    const result = await publishRun({ dataDir: DATA_DIR, artifactRoot: ARTIFACT_DIR, publishRoot: join(ROOT, 'publish'), runId })
+    sendJson(res, 200, result)
+  } catch (error) {
+    sendJson(res, 500, { error: String(error && error.message ? error.message : error) })
+  }
+}
+
+async function handleArchive(req, res) {
+  let body
+  try { body = await readBody(req) } catch { return sendJson(res, 400, { error: 'bad body' }) }
+  const runId = String(body.runId || '')
+  if (!RUN_ID.test(runId)) return sendJson(res, 400, { error: 'runId required' })
+  try {
+    sendJson(res, 200, await archiveRun({ dataDir: DATA_DIR, runId }))
+  } catch (error) {
+    sendJson(res, 500, { error: String(error && error.message ? error.message : error) })
+  }
+}
+
 /* ---------------- 插件入口 ---------------- */
 
 export function apply(ctx) {
+  const agents = ctx.get('agents')
+  const subagents = ctx.get('subagents')
+  registerProbe(ctx, agents, subagents)
   ctx.effect(
     () =>
       ctx.webServer.register({
@@ -501,6 +685,106 @@ export function apply(ctx) {
     () =>
       ctx.webServer.register({
         kind: 'exact',
+        path: '/jingwei/models',
+        handler: async (req, res) => {
+          if (req.method !== 'GET' && req.method !== 'HEAD') {
+            res.writeHead(405, { allow: 'GET, HEAD', 'cache-control': 'no-store' })
+            res.end()
+            return
+          }
+          try {
+            const body = JSON.stringify(await getModelData())
+            res.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              'content-length': Buffer.byteLength(body),
+              'cache-control': 'no-store',
+            })
+            res.end(req.method === 'HEAD' ? undefined : body)
+          } catch (error) {
+            const body = JSON.stringify({ error: String(error && error.message ? error.message : error) })
+            res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+            res.end(body)
+          }
+        },
+      }),
+    'jingwei: models panel data',
+  )
+
+
+
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: '/jingwei/actions/review', handler: (req, res) => req.method !== 'POST' ? (res.writeHead(405), res.end()) : handleReview(req, res) }),
+    'jingwei: review action',
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: '/jingwei/actions/rerun-subgraph', handler: (req, res) => req.method !== 'POST' ? (res.writeHead(405), res.end()) : handleRerunSubgraph(agents, subagents, req, res) }),
+    'jingwei: rerun subgraph action',
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: '/jingwei/actions/publish', handler: (req, res) => req.method !== 'POST' ? (res.writeHead(405), res.end()) : handlePublish(req, res) }),
+    'jingwei: publish action',
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: '/jingwei/actions/archive', handler: (req, res) => req.method !== 'POST' ? (res.writeHead(405), res.end()) : handleArchive(req, res) }),
+    'jingwei: archive action',
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'exact', path: '/jingwei/actions/open-external', handler: (req, res) => req.method !== 'POST' ? (res.writeHead(405), res.end()) : handleOpenExternal(req, res) }),
+    'jingwei: open external action',
+  )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: '/jingwei/actions/run-plan',
+        handler: async (req, res) => {
+          if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST' }); res.end(); return }
+          let body = {}
+          try {
+            const chunks = []
+            for await (const chunk of req) chunks.push(chunk)
+            body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+          } catch {
+            return sendJson(res, 400, { error: 'bad body' })
+          }
+          const sessionId = String(body.sessionId || '')
+          const parent = agents.get(sessionId)
+          if (!parent) return sendJson(res, 409, { error: 'session is not live' })
+          if (runningTask) return sendJson(res, 409, { error: 'task already running' })
+          runningTask = true
+          sendJson(res, 202, { accepted: true })
+          runPlan({ subagents, parent, plan: body.plan, style: String(body.style || ''), dataDir: DATA_DIR, artifactRoot: ARTIFACT_DIR, workerDefaults: ORCHESTRATOR.worker })
+            .catch(async (error) => {
+              try { const graph = await readGraph(); graph.error = String(error && error.message ? error.message : error); await writeGraph(graph) } catch {}
+            })
+            .finally(() => { runningTask = false })
+        },
+      }),
+    'jingwei: run-plan action',
+  )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: '/jingwei/actions/dispatch',
+        handler: (req, res) => {
+          if (req.method !== 'POST') {
+            res.writeHead(405, { allow: 'POST', 'cache-control': 'no-store' })
+            res.end()
+            return
+          }
+          return handleDispatch(agents, subagents, req, res)
+        },
+      }),
+    'jingwei: dispatch action',
+  )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
         path: '/jingwei/actions/rerun',
         handler: (req, res) => {
           if (req.method !== 'POST') {
@@ -548,3 +832,5 @@ export function apply(ctx) {
     'jingwei: save view action',
   )
 }
+
+

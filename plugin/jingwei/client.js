@@ -6,7 +6,13 @@ window.__ModuleLoader__.load({
 
     const React = require('react');
     const SVG = 'http://www.w3.org/2000/svg';
-    const W = 188, MW = 164, GAP = 226;
+    // v3.2 世界坐标（docs/03-画布规范.md §尺寸与间距 ＋ GPT-6 Sol《设计说明》§1.1 纵向主轴）
+    //   节点自身尺寸由 CSS 定义、布局侧取 DOM 实测；这里只放**结构常量**。
+    const MW = 176;        // merge 节点宽（CSS 模板里要用）
+    const AXIS = 240;      // 纵向主轴 x（节点**中心**）
+    const SUB = 252;       // 双列中心距（列间净间距 = 252 − 216 = 36）
+    const ROW_GAP = 72;    // 上下层净间距
+    const CORRIDOR = 18;   // 中央走线区半宽（两列之间 x = AXIS ± 18）
     const MIN = .25, MAX = 3;
     const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
     const branch = n => n.kind !== 'merge';
@@ -46,67 +52,158 @@ button{font-family:inherit}
 .wire.active path{stroke:rgba(255,255,255,.83)}
 .wire.active circle{fill:#fff}
 .wire.failed path{stroke:rgba(255,255,255,.13)}
+/* v3.2：**绿色不沿连线传播**。连线只回答"这条依赖走完了没有"，
+   用亮度区分（.28 未走 → .62 已完成），不用色相——色相留给执行完成那根短线。 */
+.wire.done path{stroke:rgba(255,255,255,.62)}
+.wire.done circle{fill:rgba(255,255,255,.7)}
 .wire.running path {
   stroke:rgba(255,255,255,.57);stroke-dasharray:3 6;
-  animation:flow 2.5s linear infinite;
+  animation:flow 2.8s linear infinite;
 }
 .wire.running.active path{stroke:#fff}
 .nodes{position:absolute;left:0;top:0}
+/* ───────────────────────────────────────────────────────────────
+   v3.2 节点版式（依据 GPT-6 Sol 评审《docs/03-画布规范.md》v3.2）
+
+   三层信息：
+     ① 做什么     顶部角色标签（10px 等宽弱白）+ 标题（15~16px/600，最多两行）
+     ② 执行到哪   状态行：12×2px 短线 + 状态文字 + 耗时
+     ③ 结果与来源 分隔线（1px / 约 12% 白）以下：结论签 + 模型名/产物格式（最弱）
+
+   颜色纪律：**绿色只属于 status==='done'**，且只出现在 .node-mark 这一条短线上。
+   不染整卡、不绿边、不绿阴影、不沿连线传播。
+   执行完成 / 核查通过 / 可交付 / 人工已验收 是四条独立的轴，
+   核查未过 / 人工退回 / 交付受阻 用**白底黑字反相签**表达，不用红。
+   ─────────────────────────────────────────────────────────────── */
 .node {
-  position:absolute;width:${W}px;min-height:94px;
-  display:flex;flex-direction:column;justify-content:space-between;
-  gap:18px;padding:16px 16px 14px;
-  background:#000;border:1px solid rgba(255,255,255,.32);
+  position:absolute;width:216px;min-height:124px;
+  display:flex;flex-direction:column;
+  padding:15px 18px;
+  background:#000;border:1px solid rgba(255,255,255,.26);
   border-radius:2px;cursor:grab;
-  transition:border-color .17s ease,outline-color .17s ease;
+  transition:border-color .12s ease,outline-color .12s ease;
 }
-.node:hover{border-color:rgba(255,255,255,.76)}
+.node:hover{border-color:rgba(255,255,255,.62)}
 .node.selected {
   border-color:#fff;outline:1px solid rgba(255,255,255,.65);
   outline-offset:3px;
 }
 .node.dragging{cursor:grabbing;border-color:#fff}
-.node.running {
-  border-style:dashed;border-color:rgba(255,255,255,.66);
-  animation:breathe 2.6s ease-in-out infinite;
-}
+.node.running{border-style:dashed;border-color:rgba(255,255,255,.66)}
 .node.running.selected{outline-color:#fff}
 .node.failed{border-color:rgba(255,255,255,.22)}
 .node.failed.selected{border-color:#fff}
-.node-head{display:flex;align-items:baseline;gap:9px;min-width:0}
-.node-name {
-  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;color:#fff;font-size:14px;font-weight:600;
-  line-height:1.4;letter-spacing:.025em;
+
+/* ① 做什么 —— 角色标签：10px 等宽弱白 */
+.node-role{
+  flex:none;margin-bottom:7px;color:rgba(255,255,255,.4);
+  font:10px/1.2 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  letter-spacing:.14em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.node-time {
-  flex:none;white-space:nowrap;color:rgba(255,255,255,.54);
+/* ① 做什么 —— 标题：最多两行 */
+.node-title{
+  flex:none;min-width:0;color:#fff;
+  font-size:15px;font-weight:600;line-height:1.42;letter-spacing:.025em;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden;overflow-wrap:break-word;
+}
+/* ② 执行到哪 —— 状态行：短线 + 状态文字 + 耗时 */
+.node-status{
+  flex:none;display:flex;align-items:center;gap:8px;margin-top:11px;
+  min-height:13px;color:rgba(255,255,255,.58);
+  font:10.5px/1.3 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  letter-spacing:.02em;white-space:nowrap;
+}
+/* 12×2px 短线：**只有 status==='done' 才变绿**，其余状态是中性灰白 */
+.node-mark{
+  flex:none;width:12px;height:2px;border-radius:1px;
+  background:rgba(255,255,255,.22);transition:background .12s ease;
+}
+.node.done .node-mark{background:rgb(80,255,150)}
+/* 「执行完成」四个字也可以用同一支绿 —— 它和短线说的是同一件事 */
+.node.done .node-status-text{color:rgb(80,255,150)}
+.node.running .node-mark{background:rgba(255,255,255,.62)}
+.node.failed .node-mark{background:rgba(255,255,255,.44)}
+.node-status-text{flex:none}
+.node-time{
+  flex:none;margin-left:auto;color:rgba(255,255,255,.42);
   font:10px/1.35 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
   font-variant-numeric:tabular-nums;letter-spacing:-.02em;
 }
-.node-meta {
-  max-width:calc(100% - 23px);min-width:0;
+/* ③ 结果与来源 —— 分隔线：约 12% 白 */
+.node-sep{flex:none;height:1px;margin:11px 0 9px;background:rgba(255,255,255,.12)}
+/* ③ 结论：反相签（白底黑字）= 核查未过 / 人工退回 / 交付受阻 */
+.node-verdicts{flex:none;display:flex;flex-wrap:wrap;gap:5px;margin-bottom:9px}
+.node-verdicts:empty{display:none}
+.node-verdict{
+  display:inline-block;padding:1px 7px;border-radius:1px;
+  font:10px/1.9 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  letter-spacing:.08em;white-space:nowrap;
+}
+.node-verdict.invert{background:#fff;color:#000}
+.node-verdict.plain{
+  background:transparent;color:rgba(255,255,255,.66);
+  border:1px solid rgba(255,255,255,.22);
+}
+.node-verdict.weak{background:transparent;color:rgba(255,255,255,.36)}
+/* ③ 来源：模型名 · 产物格式（10px、约 42% 白 —— 最弱一级） */
+.node-meta{
+  flex:none;min-width:0;margin-top:auto;margin-right:28px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  color:rgba(255,255,255,.39);
+  color:rgba(255,255,255,.42);
   font:10px/1.5 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
-  letter-spacing:.025em;
+  letter-spacing:.03em;
 }
-.node.failed .node-meta{color:rgba(255,255,255,.23)}
-.node.failed .node-time{color:rgba(255,255,255,.76)}
-.node.running .node-time{animation:fade 2.6s ease-in-out infinite}
-.node.merge {
-  width:${MW}px;min-height:76px;padding:14px 15px 12px;
-  gap:12px;border-color:rgba(255,255,255,.24);
+
+/* ── 端点造型：靠**形状与位置**区分，不靠色相 ──────────────────
+   intake = 一张委托卡（整张图的开端，不是另一个生产 Agent） */
+.node.intake{
+  width:228px;min-height:142px;
+  border-left:3px solid rgba(255,255,255,.72);
 }
-.node.merge .node-name{font-size:13px}
-.node.merge .node-meta{color:rgba(255,255,255,.35)}
+.node.intake .node-title{font-size:16px}
+.node.intake .node-sep{display:none}
+.node.intake .node-meta{display:none}
+.node.intake .node-verdicts{margin-bottom:0}
+
+/* output = 一张最终作品的封签（画面的终点，**不是成功奖章**） */
+.node.output{width:240px;min-height:152px;border-color:rgba(255,255,255,.3)}
+.node.output .node-title{font-size:16px}
+/* 双层细框的**局部**处理：内侧顶部一条短水平线，形成收束结构 */
+.node-cap{
+  flex:none;width:44px;height:1px;margin-bottom:11px;
+  background:rgba(255,255,255,.28);
+}
+
+/* merge = 收口节点 */
+.node.merge{
+  width:${MW}px;min-height:92px;padding:14px 15px 12px;
+  border-color:rgba(255,255,255,.24);
+}
+.node.merge .node-title{font-size:13.5px}
+
+/* audit = 终审节点 */
+.node.audit{width:200px;min-height:120px}
+
+/* verify = 核查芯片：结论优先，压扁成一张薄片 */
+.node.verify{
+  width:200px;min-height:56px;padding:8px 10px;
+  background:rgba(0,0,0,.96);border-style:solid;
+}
+.node.verify .node-role{margin-bottom:3px;font-size:9.5px}
+.node.verify .node-title{font-size:11.5px;-webkit-line-clamp:1}
+.node.verify .node-status{margin-top:7px;font-size:10px}
+.node.verify .node-sep{display:none}
+.node.verify .node-meta{display:none}
+.node.verify .node-verdicts{margin:7px 0 0}
+
 .more {
   position:absolute;right:7px;bottom:6px;
   display:grid;place-items:center;width:29px;height:28px;
   padding:0;border:0;border-radius:2px;
   background:rgba(255,255,255,0);color:rgba(255,255,255,.52);
   font:19px/1 ui-monospace,Consolas,monospace;
-  opacity:0;cursor:pointer;
+  opacity:.65;cursor:pointer;
   transition:opacity .15s ease,color .15s ease,background .15s ease;
 }
 .node:hover .more,.node.selected .more,.more:focus-visible{opacity:1}
@@ -156,11 +253,28 @@ button{font-family:inherit}
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:16px;font-weight:600;line-height:1.45;letter-spacing:.025em;
 }
+/* 产物路径 · 类型：最弱一级，但让人一眼知道在看哪个文件 */
+.preview-path {
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:rgba(255,255,255,.3);
+  font:10px/1.4 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  letter-spacing:.02em;
+}
 .preview-close {
   flex:none;width:31px;height:31px;border:1px solid rgba(255,255,255,.3);
   border-radius:2px;background:#000;color:rgba(255,255,255,.7);
   font:20px/1 ui-monospace,Consolas,monospace;cursor:pointer;
   transition:border-color .16s ease,color .16s ease;
+}
+.preview-actions{flex:none;display:flex;align-items:center;gap:9px}
+.preview-open {
+  height:31px;padding:0 13px;border:1px solid rgba(255,255,255,.3);
+  border-radius:2px;background:#000;color:rgba(255,255,255,.72);
+  font:11.5px/1 ui-monospace,Consolas,monospace;letter-spacing:.05em;cursor:pointer;
+  transition:border-color .16s ease,color .16s ease;
+}
+.preview-open:hover,.preview-open:focus-visible {
+  border-color:#fff;color:#fff;outline:none;
 }
 .preview-close:hover,.preview-close:focus-visible {
   border-color:#fff;color:#fff;outline:none;
@@ -178,21 +292,98 @@ button{font-family:inherit}
   font:11px/1.85 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
   tab-size:2;user-select:text;-webkit-user-select:text;
 }
-.preview-content img{display:block;max-width:100%;max-height:100%;object-fit:contain}
+.preview-content .md {
+  width:100%;max-width:760px;margin:0 auto;padding:0 2px 40px;
+  color:rgba(255,255,255,.86);
+  font:13px/1.9 "PingFang SC","Noto Sans SC",system-ui,sans-serif;
+  user-select:text;-webkit-user-select:text;
+}
+.preview-content .md h1{font-size:19px;line-height:1.5;margin:0 0 14px;font-weight:600;letter-spacing:.02em}
+.preview-content .md h2{font-size:16px;line-height:1.5;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,.16);font-weight:600}
+.preview-content .md h3{font-size:14px;margin:20px 0 8px;font-weight:600}
+.preview-content .md p{margin:0 0 10px;color:rgba(255,255,255,.78)}
+.preview-content .md ul{margin:0 0 12px;padding-left:18px}
+.preview-content .md li{margin:0 0 5px;color:rgba(255,255,255,.78)}
+.preview-content .md blockquote{margin:0 0 12px;padding:8px 12px;border-left:2px solid rgba(255,255,255,.3);color:rgba(255,255,255,.55);background:rgba(255,255,255,.04)}
+.preview-content .md hr{border:0;border-top:1px solid rgba(255,255,255,.16);margin:18px 0}
+.preview-content .md strong{color:#fff;font-weight:600}
+.preview-content .md code{padding:1px 5px;background:rgba(255,255,255,.1);border-radius:2px;font:11.5px/1.6 ui-monospace,Consolas,monospace}
+.preview-content .md a{color:#fff;text-decoration:underline;text-underline-offset:2px}
+.preview-content img{display:block;max-width:92%;max-height:92%;object-fit:contain}
 .preview-content iframe {
   width:100%;height:100%;min-height:100px;border:1px solid rgba(255,255,255,.24);
   background:#fff;
 }
-@keyframes breathe {
-  0%,100%{border-color:rgba(255,255,255,.67)}
-  50%{border-color:rgba(255,255,255,.29)}
-}
-@keyframes fade{0%,100%{opacity:1}50%{opacity:.48}}
+/* v3.2 动效极简（《设计说明》§4）：
+   只保留连线上的虚线流动（flow）、菜单/预览渐入（appear）。
+   原 breathe（整卡呼吸）与 fade（文字闪烁）已删——GPT 要求「不要整张卡片呼吸，也不要让文字闪烁」。 */
 @keyframes flow{to{stroke-dashoffset:-18}}
 @keyframes appear {
   from{opacity:0;transform:translateY(4px)}
   to{opacity:1;transform:translateY(0)}
 }
+.dock {
+  position:absolute;left:12px;right:12px;bottom:12px;z-index:15;
+  display:flex;align-items:center;gap:8px;
+  padding:7px 9px;background:rgba(0,0,0,.9);
+  border:1px solid rgba(255,255,255,.3);border-radius:2px;
+  backdrop-filter:blur(4px);
+}
+.dock input {
+  flex:1;min-width:0;height:26px;border:0;background:transparent;
+  color:#fff;font:12px/1.4 "PingFang SC","Noto Sans SC",system-ui,sans-serif;
+  outline:none;
+}
+.dock input::placeholder{color:rgba(255,255,255,.32)}
+.dock button {
+  flex:none;width:28px;height:26px;border:0;background:transparent;
+  color:rgba(255,255,255,.62);font:16px/1 ui-monospace,Consolas,monospace;
+  cursor:pointer;border-radius:2px;
+}
+.dock button:hover{color:#fff;background:rgba(255,255,255,.1)}
+.hint {
+  position:absolute;left:14px;bottom:56px;z-index:14;
+  color:rgba(255,255,255,.26);
+  font:10px/1.4 ui-monospace,"SFMono-Regular",Consolas,monospace;
+  letter-spacing:.02em;pointer-events:none;
+}
+/* 「重排版面」常驻入口：冲突提示只在**真的重叠**时出现（GPT §七 2），
+   但旧版式留下的坐标即使不重叠也可能看着别扭 —— 所以再给一个随时能按的入口。 */
+.hint .relayout {
+  margin-left:10px;padding:0;border:0;background:transparent;
+  color:rgba(255,255,255,.4);cursor:pointer;pointer-events:auto;
+  font:inherit;letter-spacing:inherit;
+  border-bottom:1px solid rgba(255,255,255,.22);
+}
+.hint .relayout:hover{color:#fff;border-bottom-color:#fff}
+/* 布局冲突提示（GPT-6 Sol 第 3 轮 §⑦）：
+   非阻断式的一次性提示 —— **默认保留用户已保存的坐标**，
+   只在真的检测到节点矩形重叠时出现，并给出「按新版式重排」入口。 */
+.jw-conflict {
+  position:absolute;left:12px;right:12px;bottom:52px;z-index:16;
+  display:none;align-items:center;gap:10px;
+  padding:9px 11px;background:rgba(0,0,0,.94);
+  border:1px solid rgba(255,255,255,.34);border-radius:2px;
+  box-shadow:0 6px 22px rgba(0,0,0,.5);
+}
+.jw-conflict.on{display:flex}
+.jw-conflict p{
+  flex:1;min-width:0;margin:0;
+  color:rgba(255,255,255,.72);font-size:11px;line-height:1.55;
+}
+.jw-conflict p b{
+  display:block;margin-bottom:2px;color:#fff;
+  font-size:12px;font-weight:600;
+}
+.jw-conflict button {
+  flex:none;padding:5px 10px;border:1px solid rgba(255,255,255,.3);
+  border-radius:2px;background:#000;color:rgba(255,255,255,.78);
+  font:11px/1.4 "PingFang SC","Noto Sans SC",system-ui,sans-serif;
+  cursor:pointer;transition:border-color .15s ease,color .15s ease,background .15s ease;
+}
+.jw-conflict button:hover{border-color:#fff;color:#fff}
+.jw-conflict button.primary{background:#fff;color:#000;border-color:#fff}
+.jw-conflict button.primary:hover{background:rgba(255,255,255,.88);color:#000}
 @media(max-width:340px){.preview{padding:22px 19px}.menu{width:162px}}
 @media(prefers-reduced-motion:reduce){
   .node,.node *,.wire *,.menu,.preview,.preview-close{
@@ -213,6 +404,16 @@ button{font-family:inherit}
   <div class="world">
     <svg class="edges" aria-hidden="true"><g></g></svg>
     <div class="nodes"></div>
+  </div>
+  <div class="hint">拖动节点 · 拖空白平移 · 滚轮缩放 · F 适应<button type="button" class="relayout">重排版面</button></div>
+  <div class="jw-conflict" role="status" aria-live="polite">
+    <p><b>检测到节点布局重叠</b>已保留原有位置。可以按新版式重新排列，或继续使用当前布局。</p>
+    <button type="button" class="keep">保留当前布局</button>
+    <button type="button" class="redo primary">按新版式重排</button>
+  </div>
+  <div class="dock">
+    <input class="task" type="text" placeholder="描述你要做的事…" aria-label="描述任务" />
+    <button class="send" type="button" aria-label="发送任务">→</button>
   </div>
 </div>`;
 
@@ -276,7 +477,16 @@ button{font-family:inherit}
             ? n.artifact : undefined,
           artifactType: typeof n.artifactType === 'string'
             ? n.artifactType : undefined,
-          error: typeof n.error === 'string' ? n.error : undefined
+          error: typeof n.error === 'string' ? n.error : undefined,
+          role: typeof n.role === 'string' ? n.role : '',
+          // ⚠️ 这两个字段**必须透传**（2026-10-20 修）：
+          //    review = 核查结论（pass/fail/unknown/pending），humanReview = 人工验收（accepted/rejected/pending）。
+          //    之前它们没被 normalize 保留 ⇒ 画布上「核查未通过」的表达从来没生效过。
+          review: typeof n.review === 'string' ? n.review : 'pending',
+          humanReview: typeof n.humanReview === 'string' ? n.humanReview : 'pending',
+          deps: Array.isArray(n.deps) ? n.deps.map(String) : [],
+          x: Number.isFinite(Number(n.x)) ? Number(n.x) : undefined,
+          y: Number.isFinite(Number(n.y)) ? Number(n.y) : undefined
         });
       }
 
@@ -294,12 +504,276 @@ button{font-family:inherit}
         version: 1,
         runId: String(src.runId || ''),
         nodes,
-        edges
+        edges,
+        // ⚠️ delivery 是**运行级**的交付判定（ready/blocked/failed），
+        //    之前没被保留 ⇒ 画布上拿不到"这一轮能不能交付"。
+        delivery: (src.delivery && typeof src.delivery === 'object') ? {
+          status: String(src.delivery.status || ''),
+          reason: String(src.delivery.reason || ''),
+          failedNodes: Array.isArray(src.delivery.failedNodes) ? src.delivery.failedNodes.map(String) : [],
+          failedReviews: Array.isArray(src.delivery.failedReviews) ? src.delivery.failedReviews.map(String) : [],
+        } : null,
       };
     }
 
-    function createCanvas(host, shadow, sessionId) {
+    
+    function createModelDock(shadow) {
+      const style = document.createElement('style');
+      style.textContent = `
+.mp-fab{position:absolute;left:12px;top:12px;z-index:26;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:rgba(0,0,0,.92);border:1px solid rgba(255,255,255,.34);color:#fff;font:12px/1 ui-monospace,Consolas,monospace;cursor:pointer;user-select:none;transition:border-color .16s ease,background .16s ease}
+.mp-fab:hover{border-color:#fff;background:#000}
+.mp-fab-count{position:absolute;right:-5px;top:-5px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:#000;border:1px solid rgba(255,255,255,.5);color:#fff;font:9px/15px ui-monospace,Consolas,monospace;text-align:center}
+.mp-dock{position:absolute;left:12px;top:12px;z-index:26;width:292px;max-height:calc(100% - 108px);display:flex;flex-direction:column;background:rgba(6,6,6,.96);border:1px solid rgba(255,255,255,.3);border-radius:3px;color:#fff;font-family:"PingFang SC","Noto Sans SC",system-ui,sans-serif;backdrop-filter:blur(8px);box-shadow:0 18px 48px rgba(0,0,0,.45)}
+.mp-dock-head{flex:none;display:flex;align-items:center;gap:8px;padding:10px 11px 8px;border-bottom:1px solid rgba(255,255,255,.14)}
+.mp-dock-title{flex:1;font-size:12.5px;font-weight:600;letter-spacing:.03em}
+.mp-dock-sub{font:9.5px/1.4 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.42)}
+.mp-dock-close{flex:none;width:24px;height:24px;border:1px solid rgba(255,255,255,.26);border-radius:2px;background:transparent;color:rgba(255,255,255,.7);font:15px/1 ui-monospace,Consolas,monospace;cursor:pointer}
+.mp-dock-close:hover{border-color:#fff;color:#fff}
+.mp-dock-sum{flex:none;padding:8px 11px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;flex-direction:column;gap:4px}
+.mp-dock-row{display:flex;justify-content:space-between;gap:8px;font:10px/1.5 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.55)}
+.mp-dock-row b{color:rgba(255,255,255,.9);font-weight:500}
+.mp-dock-list{flex:1;overflow:auto;padding:5px 0 8px;scrollbar-width:thin}
+.mp-dock-model{border-bottom:1px solid rgba(255,255,255,.06)}
+.mp-dock-name{display:flex;align-items:center;gap:7px;padding:7px 11px;cursor:pointer;font:11px/1.4 ui-monospace,Consolas,monospace}
+.mp-dock-name:hover{background:rgba(255,255,255,.05)}
+.mp-dock-name span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mp-dock-badge{flex:none;font:9px/1 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.45);border:1px solid rgba(255,255,255,.16);border-radius:2px;padding:2px 4px}
+.mp-dock-prov{padding:1px 11px 7px 22px;display:flex;flex-direction:column;gap:3px}
+.mp-dock-prov div{border-left:1px solid rgba(255,255,255,.16);padding-left:8px}
+.mp-dock-prov .n{font-size:10.5px;color:rgba(255,255,255,.82)}
+.mp-dock-prov .m{font:9px/1.5 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.4)}
+.mp-dock-empty{padding:14px 11px;font:10.5px/1.6 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.4)}
+.mp-dock-off{font:9px/1 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.55);border:1px solid rgba(255,255,255,.32);border-radius:2px;padding:2px 4px;font-style:normal;margin-left:6px}
+.mp-dock-note{padding:0 11px 7px 11px;font:9.5px/1.5 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.5)}
+.mp-dock-prov .off .n{color:rgba(255,255,255,.42);text-decoration:line-through}
+`;
+      shadow.appendChild(style);
+
+      const fab = document.createElement('button');
+      fab.type = 'button';
+      fab.className = 'mp-fab';
+      fab.title = '可用模型';
+      fab.innerHTML = '<span>M</span><span class="mp-fab-count"></span>';
+      shadow.appendChild(fab);
+
+      let data = null;
+      let open = '';
+      let expanded = false;
+
+      const load = async () => {
+        try {
+          const res = await fetch('jingwei/models', { cache: 'no-store' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          data = await res.json();
+          render();
+        } catch (error) {
+          if (!expanded) return;
+          data = { error: String(error && error.message ? error.message : error) };
+          render();
+        }
+      };
+
+      const metaOf = (provider) => {
+        const parts = [];
+        if (provider.channelName) parts.push(provider.channelName);
+        if (provider.speed) parts.push('速度 ' + provider.speed);
+        if (provider.balance) parts.push(provider.balance);
+        else if (provider.billing) parts.push(provider.billing);
+        if (provider.contextWindow) parts.push('上下 ' + Math.round(provider.contextWindow / 1000) + 'K');
+        return parts.join(' · ');
+      };
+
+      const render = () => {
+        fab.querySelector('.mp-fab-count').textContent = data && Array.isArray(data.models) ? String(data.models.length) : '';
+        const old = shadow.querySelector('.mp-dock');
+        if (old) old.remove();
+        if (!expanded) return;
+
+        const dock = document.createElement('div');
+        dock.className = 'mp-dock';
+        const models = data && Array.isArray(data.models) ? data.models : [];
+        const accounts = data && data.buddy && Array.isArray(data.buddy.accountsSummary) ? data.buddy.accountsSummary : [];
+        const credit = accounts.reduce((sum, row) => sum + (Number.isFinite(row.credit) ? row.credit : 0), 0);
+        const active = accounts.reduce((sum, row) => sum + (row.active || 0), 0);
+        const high = data && data.gateway && data.gateway.high ? data.gateway.high.length : 0;
+
+        const head = document.createElement('div');
+        head.className = 'mp-dock-head';
+        head.innerHTML = '<div class="mp-dock-title">可用模型</div><div class="mp-dock-sub">' + models.length + ' 个</div>';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'mp-dock-close';
+        close.textContent = '×';
+        close.title = '收起';
+        close.addEventListener('click', (event) => { event.stopPropagation(); expanded = false; render(); });
+        head.appendChild(close);
+        dock.appendChild(head);
+
+        const sum = document.createElement('div');
+        sum.className = 'mp-dock-sum';
+        sum.innerHTML = '<div class="mp-dock-row"><span>BUDDY 账号</span><b>' + active + ' 活跃 · 余额 ' + credit.toFixed(2) + '</b></div>' +
+          '<div class="mp-dock-row"><span>嗨模型 high</span><b>' + high + ' 个渠道</b></div>';
+        dock.appendChild(sum);
+        if (data && data.notice) {
+          const notice = document.createElement('div');
+          notice.className = 'mp-dock-note';
+          notice.textContent = data.notice;
+          dock.appendChild(notice);
+        }
+
+        const list = document.createElement('div');
+        list.className = 'mp-dock-list';
+        if (data && data.error) {
+          list.innerHTML = '<div class="mp-dock-empty">读取失败：' + data.error + '</div>';
+        } else if (!models.length) {
+          list.innerHTML = '<div class="mp-dock-empty">' + (data ? '没有可用模型' : '读取中…') + '</div>';
+        } else {
+          for (const model of models) {
+            const row = document.createElement('div');
+            row.className = 'mp-dock-model';
+            const name = document.createElement('div');
+            name.className = 'mp-dock-name';
+            name.innerHTML = '<span>' + model.name + (model.available === false ? ' <em class="mp-dock-off">不可用</em>' : '') + '</span><span class="mp-dock-badge">' + (model.providers ? model.providers.length : 0) + ' 渠道</span>';
+            name.addEventListener('click', (event) => {
+              event.stopPropagation();
+              open = open === model.name ? '' : model.name;
+              render();
+            });
+            row.appendChild(name);
+            if (model.available === false && model.note) {
+              const note = document.createElement('div');
+              note.className = 'mp-dock-note';
+              note.textContent = model.note;
+              row.appendChild(note);
+            }
+            if (open === model.name) {
+              const prov = document.createElement('div');
+              prov.className = 'mp-dock-prov';
+              for (const p of model.providers || []) {
+                const item = document.createElement('div');
+                if (p.available === false) item.className = 'off';
+                item.innerHTML = '<div class="n">' + (p.channelName || p.channel || p.source) + '</div><div class="m">' + (metaOf(p) || p.source) + (p.note ? ' · ' + p.note : '') + '</div>';
+                prov.appendChild(item);
+              }
+              row.appendChild(prov);
+            }
+            list.appendChild(row);
+          }
+        }
+        dock.appendChild(list);
+
+        const stop = (event) => event.stopPropagation();
+        dock.addEventListener('pointerdown', stop);
+        dock.addEventListener('click', stop);
+        shadow.appendChild(dock);
+      };
+
+      fab.addEventListener('click', (event) => {
+        event.stopPropagation();
+        expanded = !expanded;
+        if (expanded && !data) load();
+        render();
+      });
+      fab.addEventListener('pointerdown', (event) => event.stopPropagation());
+
+      load();
+      const timer = setInterval(load, 60000);
+      return () => { clearInterval(timer); fab.remove(); const d = shadow.querySelector('.mp-dock'); if (d) d.remove(); };
+    }
+
+function createCanvas(host, shadow, sessionId) {
+      // ⚠️ 声明必须**在第一次使用之前**（TDZ）：
+      //    下面第 N 行就要用 conflictBar 去取 DOM 元素，
+      //    声明放到函数中段会抛 "Cannot access 'conflictBar' before initialization"，
+      //    整个画布挂不上（2026-10-20 实机踩到，右栏一片黑）。
+      let conflictBar = null;
+      let relayoutSnapshot = null;
+      let nodeObserver = null;
+      // LAYOUT_VERSION：当前版式的版本号，写进 view.json。
+      // viewLayoutVersion：view.json 里记录的那批坐标是**哪一版**算出来的；
+      //   缺失只判「版本未知」，**不武断认定是旧版式**（GPT §⑦ 硬要求）。
+      const LAYOUT_VERSION = '3.2';
+      let viewLayoutVersion = '';
+
       const stage = shadow.querySelector('.stage');
+      const dockInput = shadow.querySelector('.dock .task');
+      const dockSend = shadow.querySelector('.dock .send');
+      const hint = shadow.querySelector('.hint');
+      conflictBar = shadow.querySelector('.jw-conflict');
+      createModelDock(shadow);
+      const submitTask = async () => {
+        const text = (dockInput.value || '').trim();
+        if (!text) return;
+        dockInput.value = '';
+        hint.textContent = '规划中…';
+        try {
+          const res = await fetch('jingwei/actions/dispatch', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId: sessionId || '', text: text })
+          });
+          if (res.status === 202) {
+            hint.textContent = '已下任务，等规划…';
+            autoFit = true;
+          } else if (res.status === 409) {
+            hint.textContent = '已有任务在跑';
+          } else {
+            hint.textContent = '下任务失败';
+          }
+        } catch (e) {
+          hint.textContent = '下任务失败';
+        }
+      };
+      dockInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); submitTask(); }
+      });
+      dockSend.addEventListener('click', e => { e.preventDefault(); submitTask(); });
+
+      // 布局冲突提示条（GPT-6 Sol 第 3 轮 §⑦）：默认保留已保存坐标，
+      // 只在真检测到重叠时出现，并提供「按新版式重排」入口（重排后还能撤销）。
+      const showUndoBar = () => {
+        if (!conflictBar) return;
+        conflictBar.querySelector('p').innerHTML = '<b>已按新版式重排</b>新坐标已保存。';
+        conflictBar.querySelector('.keep').textContent = '撤销';
+        conflictBar.querySelector('.redo').style.display = 'none';
+        conflictBar.classList.add('on');
+        setTimeout(() => { if (!destroyed) conflictBar.classList.remove('on'); }, 6000);
+      };
+
+      const doRelayout = () => {
+        relayoutAll();
+        showUndoBar();
+      };
+
+      if (conflictBar) {
+        conflictBar.querySelector('.keep').addEventListener('click', () => {
+          if (relayoutSnapshot) {
+            undoRelayout();
+            conflictBar.querySelector('p').innerHTML = '<b>已恢复原布局</b>';
+            conflictBar.querySelector('.keep').textContent = '保留当前布局';
+            conflictBar.querySelector('.redo').style.display = '';
+            setTimeout(() => { if (!destroyed) conflictBar.classList.remove('on'); }, 4000);
+            return;
+          }
+          const ids = detectConflicts();
+          rememberDismissed(
+            (viewLayoutVersion || 'unknown') + '|' + ids.slice().sort().join(',')
+          );
+          conflictBar.classList.remove('on');
+        });
+
+        conflictBar.querySelector('.redo').addEventListener('click', doRelayout);
+      }
+
+      // 底部常驻的「重排版面」：旧版式留下的坐标即使不重叠也可能看着别扭，
+      // 所以除了冲突提示，再给一个随时能按的入口（按完还能撤销）。
+      const relayoutBtn = shadow.querySelector('.hint .relayout');
+      if (relayoutBtn) {
+        relayoutBtn.addEventListener('click', e => {
+          e.stopPropagation();
+          doRelayout();
+        });
+      }
       const world = shadow.querySelector('.world');
       const grid = shadow.querySelector('.grid');
       const pattern = shadow.querySelector('#jw-grid-dots');
@@ -319,6 +793,10 @@ button{font-family:inherit}
       let autoFit = true, firstFit = true, destroyed = false;
       let poll = 0, saveTimer = 0, frame = 0, sequence = 0;
       let pollingBusy = false;
+
+      // ── 布局版本与冲突迁移（GPT-6 Sol 第 3 轮 §⑦）────────────
+      //   LAYOUT_VERSION / viewLayoutVersion 已提到函数顶部（见上），
+      //   避免声明在使用之后 —— 那会抛 TDZ，整个画布挂不上。
 
       const listen = (el, type, fn, opts) => {
         el.addEventListener(type, fn, opts);
@@ -422,38 +900,196 @@ button{font-family:inherit}
         firstFit = false;
       }
 
+      /* ── v3.2 自动布局：DAG 分层 + 纵向主轴 ──────────────────────
+         口径来自 GPT-6 Sol《设计说明》§1.1（docs/07-gpt6-设计说明.md）：
+           - 纵向主轴：intake 在上、output 在下，merge/audit 收束回主轴；
+             生产与核查阶段向左右展开（同一层级优先双列，双列中心距 252）。
+           - 层级按**真实依赖关系**算（拓扑层级），不按节点数组顺序。
+           - 核查节点紧跟它所核查的那一路生产者的正下方。
+           - **只排布没有保存位置的节点**：view.json 里的坐标是用户的明确意图，始终优先。
+         尺寸一律取 **DOM 实测**（节点会因长标题长高），不用写死的数。 */
       function layoutMissing() {
-        const count = graph.nodes.filter(branch).length;
-        const columns = Math.min(2, Math.max(1, count));
-        const span = columns === 1 ? W : GAP + W;
+        const fresh = graph.nodes.filter(n => !positions[n.id]);
+        if (!fresh.length) return;
 
-        let i = 0;
-        let j = 0;
+        const byId = new Map(graph.nodes.map(n => [n.id, n]));
+        const hOf = id => {
+          const el = elements[id];
+          return el && el.offsetHeight ? el.offsetHeight : 130;
+        };
+        const wOf = id => {
+          const el = elements[id];
+          return el && el.offsetWidth ? el.offsetWidth : 216;
+        };
 
-        const rows = Math.ceil(count / columns);
+        const SUB_COLS = 2;
 
+        const PRODUCER = n => roleOf(n) === 'produce' || roleOf(n) === 'image';
+        const ON_AXIS = n => {
+          const r = roleOf(n);
+          return r === 'intake' || r === 'merge' || r === 'audit' || r === 'output';
+        };
+
+        // 1) 拓扑层级（最长路径）
+        const dagRankCache = new Map();
+        const dagRankOf = (id) => {
+          if (dagRankCache.has(id)) return dagRankCache.get(id);
+          const n = byId.get(id);
+          const deps = (n && n.deps ? n.deps : []).filter(d => byId.has(d));
+          const L = deps.length
+            ? 1 + Math.max(...deps.map(d => dagRankOf(d)))
+            : 0;
+          dagRankCache.set(id, L);
+          return L;
+        };
+
+        // 2) 单元 = 一个生产者 + 它下游**唯一**的核查节点。
+        //    ⚠️ **单元是布局策略，不是 DAG 数据结构**（GPT-6 Sol 第 3 轮 §⑤ 第三硬条件）：
+        //    只有明确的一对一 生产→核查 关系才拼单元。
+        //    一个核查依赖**多个**生产者、或一个生产者挂了**多条**核查 ⇒ 核查单独成单元，
+        //    回退通用拓扑排布，绝不把它硬挂到第一个生产者头上（那会画出并不存在的依赖）。
+        const producerParents = new Map(); // verifyId -> [producer]
         for (const n of graph.nodes) {
-          if (!positions[n.id]) {
-            if (branch(n)) {
-              const row = Math.floor(i / columns);
-              const col = i % columns;
-              const oddLast = columns === 2 &&
-                row === rows - 1 && count % 2 === 1;
+          if (roleOf(n) !== 'verify') continue;
+          producerParents.set(
+            n.id,
+            (n.deps || []).map(d => byId.get(d)).filter(x => x && PRODUCER(x))
+          );
+        }
 
-              positions[n.id] = {
-                x: oddLast ? (span - W) / 2 : col * GAP,
-                y: row * 166
-              };
-            } else {
-              positions[n.id] = {
-                x: (span - MW) / 2 + j * (MW + 25),
-                y: Math.max(1, rows) * 166 + 25
-              };
-            }
+        const kidsCount = new Map(); // producerId -> 挂在它下面的核查数
+        for (const parents of producerParents.values()) {
+          for (const p of parents) {
+            kidsCount.set(p.id, (kidsCount.get(p.id) || 0) + 1);
+          }
+        }
+
+        const kidsOf = new Map();
+        for (const [vid, parents] of producerParents) {
+          if (parents.length !== 1) continue;                 // 多个生产者 ⇒ 不配单元
+          const p = parents[0];
+          if ((kidsCount.get(p.id) || 0) !== 1) continue;      // 生产者有多条核查 ⇒ 不配单元
+          if (!kidsOf.has(p.id)) kidsOf.set(p.id, []);
+          kidsOf.get(p.id).push(byId.get(vid));
+        }
+
+        const units = [];
+        const used = new Set();
+        for (const n of graph.nodes) {
+          if (!PRODUCER(n)) continue;
+          const kids = kidsOf.get(n.id) || [];
+          kids.forEach(k => used.add(k.id));
+          units.push({ top: n, bottoms: kids });
+        }
+        // 没有配到单元的核查节点（共享核查 / 多父核查），自成单元，按通用拓扑排布
+        for (const n of graph.nodes) {
+          if (roleOf(n) === 'verify' && !used.has(n.id)) {
+            units.push({ top: n, bottoms: [] });
+            used.add(n.id);
+          }
+        }
+
+        // 3) 按**逻辑层级 dagRank** 分组（最长依赖路径算出来的真实先后约束）
+        const groups = new Map();
+        for (const u of units) {
+          const L = dagRankOf(u.top.id);
+          if (!groups.has(L)) groups.set(L, []);
+          groups.get(L).push(u);
+        }
+
+        const placed = new Map();
+        const colCenter = c => AXIS + (c === 0 ? -SUB / 2 : SUB / 2);
+        const put = (n, x, y) => placed.set(n.id, { x: x - wOf(n.id) / 2, y });
+
+        // 4) **按层逐层往下放**：每一层里，主轴节点（intake/merge/audit/output）
+        //    与生产单元组交替出现，谁先谁后由层级决定。
+        //    （早先的写法是「先放全部单元、最后再放主轴节点」，
+        //      结果 intake 会压在第一个 produce 上——已修。）
+        const maxRank = graph.nodes.reduce((m, n) => Math.max(m, dagRankOf(n.id)), 0);
+        let cursor = 0;
+
+        for (let L = 0; L <= maxRank; L++) {
+          const inLayer = graph.nodes.filter(n => dagRankOf(n.id) === L);
+          const axisHere = inLayer.filter(n => ON_AXIS(n) && !placed.has(n.id));
+          const unitHere = groups.get(L) || [];
+
+          let bandTop = cursor;
+          let bandH = 0;
+
+          // 主轴节点
+          for (const n of axisHere) {
+            put(n, AXIS, cursor);
+            bandH = Math.max(bandH, hOf(n.id));
           }
 
-          if (branch(n)) i++;
-          else j++;
+          // 生产单元组：**同一层级优先双列**，核查节点在各自生产者的正下方。
+          // ⚠️ **dagRank（逻辑层级）≠ visualRow（视觉行）**（GPT-6 Sol 第 3 轮 §④）：
+          //    4 路并行时 p1 与 p3 的 dagRank 相同，却落在**不同的 visualRow**——
+          //    这是二维排版必须付出的代价，不是 DAG 变了。
+          //    visualRow = 「波次」：每波最多放两个单元；
+          //    下一波的顶部 = 上一波左右两个单元中**较低的那个底部** + 72px，
+          //    这样 p3 与 p4 顶部对齐，两列不会随着卡片高度差逐渐错乱。
+          if (unitHere.length) {
+            const cols = Math.min(SUB_COLS, unitHere.length);
+            const visualRows = Math.ceil(unitHere.length / cols);
+
+            const rowY = [];
+            const rowH = [];
+            let y = cursor + bandH + (bandH ? ROW_GAP : 0);
+
+            for (let r = 0; r < visualRows; r++) {
+              const row = unitHere.slice(r * cols, (r + 1) * cols);
+              let h = 0;
+
+              for (const u of row) {
+                let uh = hOf(u.top.id);
+                for (const b of u.bottoms) uh += ROW_GAP + hOf(b.id);
+                h = Math.max(h, uh);
+              }
+
+              rowY.push(y);
+              rowH.push(h);
+              y += h + ROW_GAP;
+            }
+
+            for (let r = 0; r < visualRows; r++) {
+              const row = unitHere.slice(r * cols, (r + 1) * cols);
+
+              // 整波只有 1 个单元时（并行数为奇数、或该层只有一路）**居中**，
+              // 别让它孤零零贴在左列
+              const lone = cols === 1 || row.length < cols;
+              const rowSpan = (row.length - 1) * SUB + 216;
+              const rowStart = AXIS - (rowSpan - 216) / 2;
+
+              for (let c = 0; c < row.length; c++) {
+                const u = row[c];
+                const cx = lone ? rowStart + c * SUB : colCenter(c);
+                put(u.top, cx, rowY[r]);
+
+                let by = rowY[r] + hOf(u.top.id) + ROW_GAP;
+                for (const b of u.bottoms) {
+                  put(b, cx, by);
+                  by += hOf(b.id) + ROW_GAP;
+                }
+              }
+            }
+
+            bandH = Math.max(bandH, rowY[visualRows - 1] + rowH[visualRows - 1] - bandTop);
+          }
+
+          if (bandH > 0) cursor = bandTop + bandH + ROW_GAP;
+        }
+
+        // 5) 只写回**没有保存过位置**的节点
+        for (const n of fresh) {
+          const p = placed.get(n.id);
+          if (p) {
+            positions[n.id] = p;
+          } else {
+            // 兜底：引擎没排到的节点（理论上不该有）也别让它消失，堆在画布下方
+            positions[n.id] = { x: AXIS - wOf(n.id) / 2, y: cursor };
+            cursor += hOf(n.id) + ROW_GAP;
+          }
         }
       }
 
@@ -477,6 +1113,106 @@ button{font-family:inherit}
           ? seconds(n.elapsedMs) : '—';
       }
 
+      /* ── v3.2 节点文案 ─────────────────────────────────────────
+         四条**独立**的轴：执行状态 / 核查结论 / 人工验收 / 交付状态。
+         绿色只属于「执行完成」；核查未过、人工退回、交付受阻一律**白底黑字反相签**。 */
+      const ROLE_LABEL = {
+        intake: 'INTAKE', produce: 'PRODUCE', verify: 'VERIFY',
+        merge: 'MERGE', audit: 'AUDIT', output: 'OUTPUT', image: 'IMAGE'
+      };
+
+      // 普通节点的产物类型用短名：MD / HTML / PNG / JSON（《设计说明》§1.3）
+      const TYPE_LABEL = {
+        html: 'HTML', htm: 'HTML',
+        md: 'MD', markdown: 'MD',
+        png: 'PNG', jpg: 'JPG', jpeg: 'JPG',
+        webp: 'WEBP', json: 'JSON'
+      };
+
+      // output 是作品的封签，用完整写法（§3「例如 HTML DOCUMENT」）
+      const TYPE_LABEL_LONG = {
+        html: 'HTML DOCUMENT', htm: 'HTML DOCUMENT',
+        md: 'MARKDOWN', markdown: 'MARKDOWN',
+        png: 'PNG IMAGE', jpg: 'JPEG IMAGE', jpeg: 'JPEG IMAGE',
+        webp: 'WEBP IMAGE', json: 'JSON'
+      };
+
+      // 预览页顶部显示的产物类型（弱白一行）
+      const PREVIEW_TYPE = {
+        html: 'HTML', htm: 'HTML',
+        md: 'MARKDOWN', markdown: 'MARKDOWN',
+        json: 'JSON', pdf: 'PDF',
+        image: 'IMAGE', png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG',
+        webp: 'WEBP', svg: 'SVG', gif: 'GIF', text: 'TEXT'
+      };
+
+      function roleOf(n) {
+        return n.role || (branch(n) ? 'produce' : 'merge');
+      }
+
+      function roleLabel(n) {
+        const role = roleOf(n);
+        const name = ROLE_LABEL[role] || 'PRODUCE';
+        if (role === 'intake') return '00 / ' + name;
+        if (role === 'output') return name + ' / FINAL';
+        const i = graph.nodes.findIndex(x => x.id === n.id);
+        return name + ' / ' + String(Math.max(0, i)).padStart(2, '0');
+      }
+
+      function statusLabel(n) {
+        if (n.status === 'running') return '运行中';
+        if (n.status === 'done') return '执行完成';
+        if (n.status === 'failed') return '执行失败';
+        return '待执行';
+      }
+
+      /** 底部最弱行：模型名 · 产物格式 */
+      function metaLine(n) {
+        const role = roleOf(n);
+        // intake 是一张委托卡，不显示无意义的模型名
+        if (role === 'intake') return '';
+        const k = n.artifactType ? String(n.artifactType).toLowerCase() : '';
+        const type = role === 'output'
+          ? (TYPE_LABEL_LONG[k] || (k ? k.toUpperCase() : ''))
+          : (TYPE_LABEL[k] || (k ? k.toUpperCase() : ''));
+        const model = n.model || '';
+        if (role === 'output') return type || 'OUTPUT';
+        if (role === 'merge') return model;
+        return [model, type].filter(Boolean).join(' · ');
+      }
+
+      /** 结论签：invert = 白底黑字反相签（需要人读的结论） */
+      function verdictChips(n) {
+        const chips = [];
+        const role = roleOf(n);
+
+        // 核查结论：只有核查/终审节点本身有结论。
+        // 其它节点的 review 恒为 pending —— 按规范「没有核查结论的节点，不要硬凑一行未知」。
+        if (role === 'verify' || role === 'audit') {
+          if (n.review === 'fail') chips.push(['invert', '核查未过']);
+          else if (n.review === 'pass') chips.push(['plain', '核查通过']);
+          else if (n.review === 'unknown') chips.push(['weak', '结论未知']);
+          else chips.push(['weak', role === 'audit' ? '待终审' : '待核查']);
+        }
+
+        // 交付状态：运行级判定，落在终点 output 上
+        if (role === 'output') {
+          const d = String((graph.delivery && graph.delivery.status) || '');
+          if (d === 'blocked') chips.push(['invert', '交付受阻']);
+          else if (d === 'failed') chips.push(['invert', '交付失败']);
+          else if (d === 'ready') chips.push(['plain', '可交付']);
+        }
+
+        // 人工验收：只放在具备人工验收意义的节点（尤其最终 output）
+        if (role === 'output') {
+          if (n.humanReview === 'rejected') chips.push(['invert', '人工退回']);
+          else if (n.humanReview === 'accepted') chips.push(['plain', '人工已验收']);
+          else if (n.humanReview === 'pending') chips.push(['weak', '待验收']);
+        }
+
+        return chips;
+      }
+
       function updateNode(n) {
         const el = elements[n.id];
         if (!el) return;
@@ -484,41 +1220,98 @@ button{font-family:inherit}
         el.classList.toggle('selected', selected === n.id);
         el.classList.toggle('running', n.status === 'running');
         el.classList.toggle('failed', n.status === 'failed');
+        el.classList.toggle('done', n.status === 'done');
+        el.classList.toggle('verify', n.role === 'verify');
+        el.classList.toggle('intake', n.role === 'intake');
+        el.classList.toggle('output', n.role === 'output');
+        el.classList.toggle('audit', n.role === 'audit');
 
-        el.querySelector('.node-name').textContent = n.title;
+        // ① 做什么
+        const role = el.querySelector('.node-role');
+        if (role) role.textContent = roleLabel(n);
+
+        const title = el.querySelector('.node-title');
+        if (title) {
+          title.textContent = n.title;
+          // 两行截断只影响**展示**：完整标题必须仍能通过悬停/聚焦拿到
+          // （GPT-6 Sol 第 3 轮 §① 补充约束）
+          title.title = n.title;
+          title.setAttribute('aria-label', n.title);
+        }
+
+        // ② 执行到哪
+        const statusText = el.querySelector('.node-status-text');
+        if (statusText) statusText.textContent = statusLabel(n);
 
         const time = el.querySelector('.node-time');
-        time.textContent = timeLabel(n);
-        time.title = n.error || '';
+        if (time) {
+          time.textContent = timeLabel(n);
+          time.title = n.error || '';
+        }
+
+        // ③ 结果与来源
+        const box = el.querySelector('.node-verdicts');
+        if (box) {
+          box.textContent = '';
+
+          for (const [kind, text] of verdictChips(n)) {
+            const chip = document.createElement('span');
+            chip.className = 'node-verdict ' + kind;
+            chip.textContent = text;
+            box.appendChild(chip);
+          }
+        }
 
         const meta = el.querySelector('.node-meta');
-        meta.textContent = branch(n)
-          ? (n.model || '—')
-          : graph.nodes.filter(branch).length + ' 路';
-
-        meta.title = meta.textContent;
+        if (meta) {
+          meta.textContent = metaLine(n);
+          meta.title = meta.textContent;
+        }
       }
 
       function makeNode(n) {
         const el = document.createElement('div');
         el.className = 'node' + (branch(n) ? '' : ' merge');
         el.dataset.id = n.id;
+        el.dataset.role = roleOf(n);
 
-        const head = document.createElement('div');
-        head.className = 'node-head';
+        // output = 作品封签：内侧顶部一条短水平线，形成收束结构
+        if (roleOf(n) === 'output') {
+          const cap = document.createElement('div');
+          cap.className = 'node-cap';
+          el.appendChild(cap);
+        }
 
-        const name = document.createElement('span');
-        name.className = 'node-name';
+        const role = document.createElement('div');
+        role.className = 'node-role';
+
+        const title = document.createElement('div');
+        title.className = 'node-title';
+
+        const status = document.createElement('div');
+        status.className = 'node-status';
+
+        const mark = document.createElement('span');
+        mark.className = 'node-mark';
+
+        const statusText = document.createElement('span');
+        statusText.className = 'node-status-text';
 
         const time = document.createElement('span');
         time.className = 'node-time';
 
-        head.append(name, time);
+        status.append(mark, statusText, time);
+
+        const sep = document.createElement('div');
+        sep.className = 'node-sep';
+
+        const verdicts = document.createElement('div');
+        verdicts.className = 'node-verdicts';
 
         const meta = document.createElement('div');
         meta.className = 'node-meta';
 
-        el.append(head, meta);
+        el.append(role, title, status, sep, verdicts, meta);
 
         if (branch(n)) {
           const more = document.createElement('button');
@@ -593,7 +1386,8 @@ button{font-family:inherit}
 
       function updateWires() {
         for (const w of wires) {
-          const n = getNode(w.from);
+          const src = getNode(w.from);
+          const dst = getNode(w.to);
 
           w.g.classList.toggle(
             'active',
@@ -602,54 +1396,182 @@ button{font-family:inherit}
 
           w.g.classList.toggle(
             'running',
-            !!n && n.status === 'running'
+            !!src && src.status === 'running'
           );
 
           w.g.classList.toggle(
             'failed',
-            !!n && n.status === 'failed'
+            !!src && src.status === 'failed'
           );
+
+          // 边状态：**不能只看上游 done**（GPT §五 4）。
+          // 没有边级事件时用保守规则「上游完成 **且** 下游已经开始或结束」。
+          // 下游核查失败，线也**不变绿、不变成功样式** —— 亮度只表达流转。
+          const flowed = !!src && !!dst &&
+            src.status === 'done' &&
+            (dst.status === 'running' || dst.status === 'done');
+
+          w.g.classList.toggle('done', flowed);
         }
       }
 
-      function drawEdges() {
-        for (const w of wires) {
-          const a = elements[w.from];
-          const b = elements[w.to];
-          const pa = positions[w.from];
-          const pb = positions[w.to];
+      /* ── 连线路由（GPT-6 Sol 第 3 轮 §五）──────────────────────────
+         1) **真实依赖才连线**：只画 graph.edges，绝不从"视觉上挨着"推导；
+         2) **跨波次长边必须绕行**：四路并行时 v1→merge 不能从 v1 底部
+            贯穿 p3/v3 —— 走**两列之间的中央走线区**；多根线小幅错位，
+            但**不提前汇合成一条**（那会看起来像共享依赖）；
+         3) **坐标系只有一个**：锚点一律用 positions + offsetWidth/Height
+            算出的画布世界坐标，绝不与 getBoundingClientRect() 混用；
+         4) **亮度表达流转，不表达核查结论**：下游核查失败，线也不变色。 */
 
-          if (!a || !b || !pa || !pb) {
+      function rectOf(id) {
+        const el = elements[id];
+        const p = positions[id];
+        if (!el || !p) return null;
+        return {
+          x: p.x, y: p.y,
+          w: el.offsetWidth, h: el.offsetHeight,
+          bottom: p.y + el.offsetHeight
+        };
+      }
+
+      /** 同一节点的出入线在边上错开，避免所有线挤在同一个点上 */
+      function computeAnchors() {
+        const outs = new Map();
+        const ins = new Map();
+
+        for (const w of wires) {
+          if (!outs.has(w.from)) outs.set(w.from, []);
+          outs.get(w.from).push(w);
+          if (!ins.has(w.to)) ins.set(w.to, []);
+          ins.get(w.to).push(w);
+        }
+
+        for (const w of wires) {
+          const ro = rectOf(w.from);
+          const ri = rectOf(w.to);
+
+          if (!ro || !ri) {
+            w.sx = w.sy = w.tx = w.ty = null;
+            continue;
+          }
+
+          const oList = outs.get(w.from);
+          const iList = ins.get(w.to);
+          const oi = oList.indexOf(w);
+          const ii = iList.indexOf(w);
+
+          w.sx = ro.x + ro.w * (oi + 1) / (oList.length + 1);
+          w.sy = ro.bottom;
+          w.tx = ri.x + ri.w * (ii + 1) / (iList.length + 1);
+          w.ty = ri.y;
+        }
+      }
+
+      /** 直线段是否穿过别的节点（要绕开的就是这些） */
+      function segmentHits(x1, y1, x2, y2, boxes, from, to) {
+        const steps = 24;
+
+        for (let s = 1; s < steps; s++) {
+          const t = s / steps;
+          const x = x1 + (x2 - x1) * t;
+          const y = y1 + (y2 - y1) * t;
+
+          for (const b of boxes) {
+            if (b.id === from || b.id === to) continue;
+            if (x > b.x - 5 && x < b.x + b.w + 5 && y > b.y - 5 && y < b.y + b.h + 5) return true;
+          }
+        }
+
+        return false;
+      }
+
+      let edgeFrame = 0;
+
+      /** 拖动中的路径更新合并到一帧（GPT §六 6） */
+      function requestDrawEdges() {
+        if (edgeFrame) return;
+        edgeFrame = requestAnimationFrame(() => {
+          edgeFrame = 0;
+          drawEdges();
+        });
+      }
+
+      function drawEdges() {
+        const boxes = [];
+
+        for (const n of graph.nodes) {
+          const r = rectOf(n.id);
+          if (r) boxes.push({ id: n.id, x: r.x, y: r.y, w: r.w, h: r.h });
+        }
+
+        computeAnchors();
+
+        // ① 哪些边需要走中央走线区
+        const corridor = [];
+
+        for (const w of wires) {
+          if (w.sx == null) { w.route = 'none'; continue; }
+          const far = w.ty - w.sy > 140;
+          const hit = far && segmentHits(w.sx, w.sy, w.tx, w.ty, boxes, w.from, w.to);
+          w.route = hit ? 'corridor' : 'direct';
+          if (hit) corridor.push(w);
+        }
+
+        // ② 走线区的车道：多根线**小幅错位**，但不提前汇合成一条
+        const count = corridor.length;
+        const spacing = count > 1
+          ? Math.min(7, (CORRIDOR * 2 - 8) / (count - 1))
+          : 0;
+
+        corridor.forEach((w, i) => {
+          w.lane = AXIS + (i - (count - 1) / 2) * spacing;
+        });
+
+        // ③ 画
+        for (const w of wires) {
+          if (w.sx == null) {
             w.g.style.display = 'none';
             continue;
           }
 
           w.g.style.display = '';
-
-          const x1 = pa.x + a.offsetWidth / 2;
-          const y1 = pa.y + a.offsetHeight;
-          const x2 = pb.x + b.offsetWidth / 2;
-          const y2 = pb.y;
-          const dy = y2 - y1;
-
-          const c = clamp(
-            Math.abs(dy) * .47,
-            28,
-            115
-          ) * (dy < 0 ? -1 : 1);
-
-          w.path.setAttribute(
-            'd',
-            `M ${x1} ${y1} C ${x1} ${y1 + c} ${x2} ${y2 - c} ${x2} ${y2}`
-          );
-
-          w.a.setAttribute('cx', x1);
-          w.a.setAttribute('cy', y1);
-          w.b.setAttribute('cx', x2);
-          w.b.setAttribute('cy', y2);
+          w.path.setAttribute('d', w.route === 'corridor' ? corridorPath(w) : directPath(w));
+          w.a.setAttribute('cx', w.sx);
+          w.a.setAttribute('cy', w.sy);
+          w.b.setAttribute('cx', w.tx);
+          w.b.setAttribute('cy', w.ty);
         }
 
         updateWires();
+      }
+
+      function directPath(w) {
+        const dy = w.ty - w.sy;
+        const c = clamp(Math.abs(dy) * .47, 28, 115) * (dy < 0 ? -1 : 1);
+        return `M ${w.sx} ${w.sy} C ${w.sx} ${w.sy + c} ${w.tx} ${w.ty - c} ${w.tx} ${w.ty}`;
+      }
+
+      /** 绕行路径：源底部 → 让位到中央走线区 → 沿通道直下 → 落回目标顶部 */
+      function corridorPath(w) {
+        const cx = w.lane;
+        const e = 26;   // 源 / 目标的缓冲
+        const k = 46;   // 转弯深度
+
+        const yA = w.sy + k;
+        const yB = w.ty - k;
+
+        if (yB <= yA) {
+          // 空间不够：退化成"带走廊的一次转折"
+          return `M ${w.sx} ${w.sy}` +
+                 ` C ${w.sx} ${w.sy + e} ${cx} ${w.sy + e} ${cx} ${w.sy + k}` +
+                 ` C ${cx} ${w.ty - e} ${w.tx} ${w.ty - e} ${w.tx} ${w.ty}`;
+        }
+
+        return `M ${w.sx} ${w.sy}` +
+               ` C ${w.sx} ${w.sy + e} ${cx} ${w.sy + e} ${cx} ${yA}` +
+               ` L ${cx} ${yB}` +
+               ` C ${cx} ${w.ty - e} ${w.tx} ${w.ty - e} ${w.tx} ${w.ty}`;
       }
 
       function select(id) {
@@ -674,7 +1596,6 @@ button{font-family:inherit}
           }
         }
 
-        layoutMissing();
         nodeLayer.textContent = '';
 
         for (const id of Object.keys(elements)) {
@@ -686,17 +1607,25 @@ button{font-family:inherit}
 
           elements[n.id] = el;
           nodeLayer.appendChild(el);
-          positionNode(n.id);
+          if (nodeObserver) nodeObserver.observe(el);
         }
 
         if (selected && !elements[selected]) selected = null;
 
+        // 顺序要紧：**先填内容**（此时高度才是最终值）→ **再排布**（要实测高度）→ **最后定位**
         for (const n of graph.nodes) {
           updateNode(n);
         }
 
+        layoutMissing();
+
+        for (const n of graph.nodes) {
+          positionNode(n.id);
+        }
+
         idsKey = nodeIds();
         makeWires();
+        checkConflicts();
       }
 
       function applyGraph(data) {
@@ -715,6 +1644,9 @@ button{font-family:inherit}
           } else {
             updateWires();
           }
+
+          // 状态变化可能让节点长高 ⇒ 复查一次有没有撞在一起
+          checkConflicts();
         }
 
         if (graph.nodes.some(n => n.status === 'running')) {
@@ -753,38 +1685,105 @@ button{font-family:inherit}
         }
       }
 
+      async function reviewNode(id, status, note) {
+        try {
+          const res = await fetch('jingwei/actions/review', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ nodeId: id, status, note })
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const n = getNode(id);
+          if (n) { n.review = status; n.reviewNote = note; }
+          console.info('[经纬] 评审已记录', id, status);
+        } catch (e) {
+          console.warn('[经纬] 评审失败', e);
+        }
+      }
+
+      async function rerunNodeGraph(id, note) {
+        try {
+          const res = await fetch('jingwei/actions/rerun-subgraph', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId: sessionId || '', nodeId: id, note: note || '' })
+          });
+          if (res.status !== 202) throw new Error('HTTP ' + res.status);
+          const n = getNode(id);
+          if (n) { n.status = 'running'; n.review = 'pending'; }
+          startPolling();
+        } catch (e) {
+          console.warn('[经纬] 重跑失败', e);
+        }
+      }
+
+      async function publishRun() {
+        try {
+          const res = await fetch('jingwei/actions/publish', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ runId: graph.runId })
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          console.info('[经纬] 发布包已导出');
+        } catch (e) {
+          console.warn('[经纬] 导出失败', e);
+        }
+      }
+
+      async function archiveRun() {
+        try {
+          const res = await fetch('jingwei/actions/archive', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ runId: graph.runId })
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          console.info('[经纬] 本轮已归档');
+        } catch (e) {
+          console.warn('[经纬] 归档失败', e);
+        }
+      }
+
       function openMenu(id, anchor) {
         closeMenu();
 
         if (preview) return;
 
         const n = getNode(id);
-        if (!n || !branch(n)) return;
+        if (!n) return;
 
         const count = graph.nodes.filter(branch).length;
 
-        const actions = [
-          [
-            '重跑这一路',
-            n.status === 'running' || pending.has(id),
-            () => rerun(id)
-          ],
-          [
-            '查看产物',
-            !n.artifact,
-            () => openPreview(id)
-          ],
-          [
-            '复制模型名',
-            !n.model,
-            () => copyText(n.model)
-          ],
-          [
-            '删除节点',
-            n.status === 'running' || pending.has(id) || count <= 1,
-            () => removeNode(id)
-          ]
-        ];
+        const runAction = (label, disabled, action) => [label, disabled, action];
+        const actions = branch(n)
+          ? [
+              runAction('重跑这一路', n.status === 'running' || pending.has(id), () => {
+                const note = window.prompt('重跑意见（可留空）', '');
+                if (note === null) return;
+                rerunNodeGraph(id, note);
+              }),
+              runAction('查看产物', !n.artifact, () => openPreview(id)),
+              runAction('通过', n.review === 'accepted', () => reviewNode(id, 'accepted', '')),
+              runAction('打回…', false, () => {
+                const note = window.prompt('打回意见', '');
+                if (note === null) return;
+                reviewNode(id, 'rejected', note);
+              }),
+              runAction('复制模型名', !n.model, () => copyText(n.model)),
+              runAction('删除节点', n.status === 'running' || pending.has(id) || count <= 1, () => removeNode(id))
+            ]
+          : [
+              runAction('查看产物', !n.artifact, () => openPreview(id)),
+              runAction('通过本轮', n.review === 'accepted', () => reviewNode(id, 'accepted', '')),
+              runAction('打回…', false, () => {
+                const note = window.prompt('打回意见', '');
+                if (note === null) return;
+                reviewNode(id, 'rejected', note);
+              }),
+              runAction('导出发布包', !graph.runId, () => publishRun()),
+              runAction('归档本轮', !graph.runId, () => archiveRun())
+            ];
 
         const box = document.createElement('div');
         box.className = 'menu';
@@ -940,7 +1939,51 @@ button{font-family:inherit}
         }
       }
 
-      function artifactType(n) {
+      function markdownToHtml(md) {
+  const esc = (value) => String(value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // 链接**只放行 http/https/mailto**（2026-10-20 安全加固）：
+  // 产物是 AI 生成的文本，`javascript:` / `data:` 之类协议绝不能进 href ——
+  // 预览页跑在插件自己的同源上下文里，漏一个就等于执行任意脚本。
+  const safeHref = (url) => {
+    const raw = String(url).trim();
+    const probe = raw.replace(/[\u0000-\u0020]/g, '').toLowerCase();
+    if (probe.startsWith('https://') || probe.startsWith('http://') || probe.startsWith('mailto:')) {
+      return raw;
+    }
+    return null;
+  };
+  const inline = (value) => esc(value)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, url) => {
+      const href = safeHref(url);
+      // 协议不安全 ⇒ 只留文字，不生成可点链接
+      return href
+        ? '<a href="' + href + '" target="_blank" rel="noreferrer noopener">' + label + '</a>'
+        : label;
+    });
+  const lines = String(md).replace(/\r\n/g, '\n').split('\n');
+  let html = '';
+  let list = false;
+  let para = [];
+  const closeList = () => { if (list) { html += '</ul>'; list = false; } };
+  const flush = () => { if (para.length) { html += '<p>' + inline(para.join(' ')) + '</p>'; para = []; } };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (!line.trim()) { flush(); closeList(); continue; }
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) { flush(); closeList(); const level = heading[1].length; html += '<h' + level + '>' + inline(heading[2]) + '</h' + level + '>'; continue; }
+    if (/^>\s?/.test(line)) { flush(); closeList(); html += '<blockquote>' + inline(line.replace(/^>\s?/, '')) + '</blockquote>'; continue; }
+    if (/^[-*]\s+/.test(line)) { flush(); if (!list) { html += '<ul>'; list = true; } html += '<li>' + inline(line.replace(/^[-*]\s+/, '')) + '</li>'; continue; }
+    if (/^---+$/.test(line.trim())) { flush(); closeList(); html += '<hr/>'; continue; }
+    para.push(line.trim());
+  }
+  flush(); closeList();
+  return html;
+}
+
+function artifactType(n) {
         if (n.artifactType) {
           return n.artifactType.toLowerCase();
         }
@@ -956,6 +1999,16 @@ button{font-family:inherit}
 
         if (['html', 'htm'].includes(ext)) {
           return 'html';
+        }
+
+        // markdown 要按**文本类**渲染（走 markdownToHtml）；
+        // 落到 text 分支就只剩一堆 # 和 ** 了（2026-10-20 第 4 段修）
+        if (['md', 'markdown'].includes(ext)) {
+          return 'md';
+        }
+
+        if (ext === 'pdf') {
+          return 'pdf';
         }
 
         return ext === 'json' ? 'json' : 'text';
@@ -987,6 +2040,8 @@ button{font-family:inherit}
         closeMenu();
         closePreview();
 
+        const type = artifactType(n);
+
         const layer = document.createElement('div');
         layer.className = 'preview';
 
@@ -1010,7 +2065,12 @@ button{font-family:inherit}
         title.className = 'preview-title';
         title.textContent = n.title;
 
-        label.append(kicker, title);
+        // 产物路径 · 类型（最弱一级）
+        const path = document.createElement('span');
+        path.className = 'preview-path';
+        path.textContent = n.artifact + '  ·  ' + (PREVIEW_TYPE[type] || 'TEXT');
+
+        label.append(kicker, title, path);
 
         const close = document.createElement('button');
         close.type = 'button';
@@ -1019,7 +2079,30 @@ button{font-family:inherit}
         close.setAttribute('aria-label', '关闭预览');
         close.addEventListener('click', closePreview);
 
-        head.append(label, close);
+        // 「在浏览器打开」：画布里看的是缩略，浏览器里才是完整交互（2026-10-20 GPT-6 评审 P1）
+        const actions = document.createElement('div');
+        actions.className = 'preview-actions';
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'preview-open';
+        openBtn.textContent = '在浏览器打开';
+        openBtn.title = '用系统默认浏览器打开这个产物';
+        openBtn.addEventListener('click', () => {
+          runAction('在浏览器打开', false, async () => {
+            const res = await fetch('jingwei/actions/open-external', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ runId: graph.runId, path: n.artifact }),
+            });
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              throw new Error(body.error || ('HTTP ' + res.status));
+            }
+          });
+        });
+        actions.append(openBtn, close);
+
+        head.append(label, actions);
 
         const content = document.createElement('div');
         content.className = 'preview-content';
@@ -1040,7 +2123,6 @@ button{font-family:inherit}
         preview = layer;
 
         const url = artifactUrl(n);
-        const type = artifactType(n);
 
         if (
           type === 'image' ||
@@ -1063,10 +2145,20 @@ button{font-family:inherit}
           };
 
           content.appendChild(img);
+        } else if (type === 'pdf') {
+          const frame = document.createElement('iframe');
+          frame.setAttribute('title', n.title + '，PDF 预览');
+          frame.src = url;
+          content.appendChild(frame);
         } else if (type === 'html') {
           const iframe = document.createElement('iframe');
 
-          iframe.setAttribute('sandbox', '');
+          // allow-scripts 但**不给** allow-same-origin（2026-10-20 GPT-6 评审 P0「限制产物脚本权限」）：
+          //   · 空 sandbox='' 会把成果页里的 JS 全禁掉 —— 折叠、点击放大都失效；
+          //   · allow-scripts 让交互能用，但 iframe 被视为**独立源**：
+          //     读不到父页面 DOM、读不到 localStorage、发不了 cookie、导航不了父页。
+          //   · 刻意不给 allow-popups / allow-forms / allow-top-navigation。
+          iframe.setAttribute('sandbox', 'allow-scripts');
           iframe.setAttribute(
             'title',
             n.title + '，HTML 预览'
@@ -1074,6 +2166,26 @@ button{font-family:inherit}
 
           iframe.src = url;
           content.appendChild(iframe);
+        } else if (type === 'md' || type === 'markdown') {
+          content.classList.add('text');
+
+          const article = document.createElement('article');
+          article.className = 'md';
+          article.textContent = '读取产物…';
+          content.appendChild(article);
+
+          fetch(url, { cache: 'no-store' })
+            .then(res => {
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              return res.text();
+            })
+            .then(text => {
+              if (destroyed || preview !== layer) return;
+              article.innerHTML = markdownToHtml(text);
+            })
+            .catch(e => {
+              if (!destroyed && preview === layer) article.textContent = '读取失败：' + e.message;
+            });
         } else {
           content.classList.add('text');
 
@@ -1126,6 +2238,11 @@ button{font-family:inherit}
           const data = await getJSON('jingwei/data/view.json');
 
           if (destroyed) return;
+
+          // 这批坐标是按哪一版版式算出来的；缺失只判「版本未知」，
+          // **不武断认定是旧版式**（GPT-6 Sol 第 3 轮 §⑦ 硬要求）
+          viewLayoutVersion = typeof data?.layoutVersion === 'string'
+            ? data.layoutVersion : '';
 
           const saved = data &&
             data.positions &&
@@ -1200,10 +2317,121 @@ button{font-family:inherit}
               'content-type': 'application/json'
             },
             body: JSON.stringify({
-              positions: data
+              positions: data,
+              // 记录这批坐标是按哪一版版式算出来的（GPT-6 Sol 第 3 轮 §⑦）
+              layoutVersion: LAYOUT_VERSION
             })
           }).catch(() => {});
         }, 450);
+      }
+
+      /* ── 布局冲突检测与「按新版式重排」（GPT-6 Sol 第 3 轮 §⑦）──
+         原则：**默认保留用户已保存的坐标**。
+         只有真的检测到节点矩形重叠时，才给一个不阻断操作的提示条；
+         绝不擅自平移或缩放旧坐标（"自动猜测旧版式来源比一次明确的重排更危险"）。 */
+      function detectConflicts() {
+        const boxes = [];
+
+        for (const n of graph.nodes) {
+          const p = positions[n.id];
+          const el = elements[n.id];
+          if (!p || !el) continue;
+          boxes.push({
+            id: n.id,
+            x1: p.x, y1: p.y,
+            x2: p.x + el.offsetWidth, y2: p.y + el.offsetHeight
+          });
+        }
+
+        const hits = new Set();
+
+        for (let i = 0; i < boxes.length; i++) {
+          for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i];
+            const b = boxes[j];
+            if (a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2) {
+              hits.add(a.id);
+              hits.add(b.id);
+            }
+          }
+        }
+
+        return [...hits];
+      }
+
+      function dismissedKeys() {
+        try {
+          const raw = localStorage.getItem('jingwei.layout.dismissed');
+          const list = raw ? JSON.parse(raw) : [];
+          return Array.isArray(list) ? list : [];
+        } catch (e) {
+          return [];
+        }
+      }
+
+      function rememberDismissed(key) {
+        try {
+          const list = dismissedKeys();
+          if (!list.includes(key)) list.push(key);
+          localStorage.setItem('jingwei.layout.dismissed', JSON.stringify(list.slice(-20)));
+        } catch (e) {}
+      }
+
+      function checkConflicts() {
+        if (!conflictBar) return;
+
+        const ids = detectConflicts();
+        if (!ids.length) {
+          conflictBar.classList.remove('on');
+          return;
+        }
+
+        // 同一份布局 + 同一布局版本下，选过「保留当前布局」就不重复打扰
+        const key = (viewLayoutVersion || 'unknown') + '|' + ids.slice().sort().join(',');
+
+        conflictBar.classList.toggle('on', !dismissedKeys().includes(key));
+      }
+
+      function relayoutAll() {
+        // 快照（供撤销）
+        relayoutSnapshot = {};
+
+        for (const [id, p] of Object.entries(positions)) {
+          relayoutSnapshot[id] = { x: p.x, y: p.y };
+        }
+
+        // 清空已保存坐标 → 全部交给新版式引擎重排
+        for (const id of Object.keys(positions)) delete positions[id];
+
+        layoutMissing();
+
+        for (const n of graph.nodes) positionNode(n.id);
+
+        // 坐标变了 ⇒ 连线**路径**要重算（updateWires 只切 class，不够）
+        requestDrawEdges();
+        if (autoFit) fit();
+        saveView();
+        checkConflicts();
+      }
+
+      function undoRelayout() {
+        if (!relayoutSnapshot) return;
+
+        for (const id of Object.keys(positions)) delete positions[id];
+
+        for (const [id, p] of Object.entries(relayoutSnapshot)) {
+          positions[id] = { x: p.x, y: p.y };
+        }
+
+        relayoutSnapshot = null;
+
+        for (const n of graph.nodes) positionNode(n.id);
+
+        // 同上：撤销也要重算路径
+        requestDrawEdges();
+        if (autoFit) fit();
+        saveView();
+        checkConflicts();
       }
 
       function endDrag(e) {
@@ -1223,6 +2451,7 @@ button{font-family:inherit}
 
       listen(stage, 'pointerdown', e => {
         if (e.button !== 0 || preview) return;
+        if (e.target.closest('.mp-fab,.mp-dock')) return;
         if (e.target.closest('.menu,.more')) return;
 
         closeMenu();
@@ -1295,7 +2524,8 @@ button{font-family:inherit}
           p.y = drag.oy + dy / view.k;
 
           positionNode(drag.id);
-          drawEdges();
+          // 拖动中的路径更新合并到一帧（GPT §六 6），别每个 pointermove 都重算
+          requestDrawEdges();
         } else {
           autoFit = false;
 
@@ -1464,6 +2694,13 @@ button{font-family:inherit}
         listeners.push(() => observer.disconnect());
       }
 
+      // 节点真实尺寸变化（长标题换行、状态行增行）⇒ 重算连线与 fit 边界
+      // （GPT §六 6：用 ResizeObserver 触发；观察器**不写尺寸**，所以不会自激重排）
+      if (typeof ResizeObserver === 'function') {
+        nodeObserver = new ResizeObserver(() => requestDrawEdges());
+        listeners.push(() => { nodeObserver.disconnect(); nodeObserver = null; });
+      }
+
       listen(window, 'resize', resize);
 
       (async () => {
@@ -1541,6 +2778,122 @@ button{font-family:inherit}
       });
     }
 
+
+    const MP_CSS = `
+.mp-rail,.mp-panel{position:fixed;top:0;bottom:0;left:0;z-index:80;font-family:"PingFang SC","Noto Sans SC",system-ui,sans-serif;color:#fff}
+.mp-rail{width:44px;display:flex;flex-direction:column;align-items:center;gap:14px;padding:12px 0;background:rgba(10,10,10,.94);border-right:1px solid rgba(255,255,255,.14);cursor:pointer;user-select:none;backdrop-filter:blur(6px)}
+.mp-rail:hover{background:rgba(18,18,18,.98)}
+.mp-rail-mark{width:22px;height:22px;border:1px solid rgba(255,255,255,.5);border-radius:2px;display:grid;place-items:center;font:11px/1 ui-monospace,Consolas,monospace}
+.mp-rail-text{writing-mode:vertical-rl;letter-spacing:.18em;font-size:11px;color:rgba(255,255,255,.62)}
+.mp-rail-count{font:10px/1 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.4)}
+.mp-panel{width:344px;display:flex;flex-direction:column;background:rgba(8,8,8,.97);border-right:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px)}
+.mp-head{flex:none;display:flex;align-items:baseline;gap:10px;padding:14px 14px 10px;border-bottom:1px solid rgba(255,255,255,.12)}
+.mp-title{flex:1;font-size:13px;font-weight:600;letter-spacing:.04em}
+.mp-sub{font:10px/1.4 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.4)}
+.mp-close{flex:none;width:26px;height:26px;border:1px solid rgba(255,255,255,.22);border-radius:2px;background:transparent;color:rgba(255,255,255,.65);font:15px/1 ui-monospace,Consolas,monospace;cursor:pointer}
+.mp-close:hover{border-color:#fff;color:#fff}
+.mp-summary{flex:none;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;flex-direction:column;gap:6px}
+.mp-summary-row{display:flex;justify-content:space-between;gap:10px;font:10.5px/1.5 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.55)}
+.mp-summary-row b{color:rgba(255,255,255,.9);font-weight:500}
+.mp-list{flex:1;overflow:auto;padding:6px 0 20px;scrollbar-width:thin}
+.mp-model{border-bottom:1px solid rgba(255,255,255,.06)}
+.mp-model-head{display:flex;align-items:center;gap:8px;padding:9px 14px;cursor:pointer}
+.mp-model-head:hover{background:rgba(255,255,255,.05)}
+.mp-model-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11.5px/1.4 ui-monospace,Consolas,monospace}
+.mp-badge{flex:none;font:9.5px/1 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.45);border:1px solid rgba(255,255,255,.16);border-radius:2px;padding:3px 5px}
+.mp-tier{flex:none;font:9.5px/1 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.72);border:1px solid rgba(255,255,255,.32);border-radius:2px;padding:3px 5px}
+.mp-providers{padding:2px 14px 10px 22px;display:flex;flex-direction:column;gap:6px}
+.mp-provider{border-left:1px solid rgba(255,255,255,.16);padding-left:9px;display:flex;flex-direction:column;gap:2px}
+.mp-provider-name{font-size:11px;color:rgba(255,255,255,.82)}
+.mp-provider-meta{font:9.5px/1.5 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.4)}
+.mp-empty{padding:16px 14px;font:11px/1.6 ui-monospace,Consolas,monospace;color:rgba(255,255,255,.4)}
+.mp-dot{flex:none;width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.3)}
+.mp-dot.ok{background:rgba(255,255,255,.8)}
+`;
+
+    function mpStyle() {
+      if (document.getElementById('jw-mp-style')) return;
+      const tag = document.createElement('style');
+      tag.id = 'jw-mp-style';
+      tag.textContent = MP_CSS;
+      document.head.appendChild(tag);
+    }
+
+    function mpMeta(provider) {
+      const parts = [];
+      if (provider.channelName) parts.push(provider.channelName);
+      if (provider.intel) parts.push('智力 ' + provider.intel.label + ' · Elo ' + provider.intel.elo + ' · GPQA ' + provider.intel.gpqa);
+      if (provider.speed) parts.push('速度 ' + provider.speed);
+      if (provider.balance) parts.push(provider.balance);
+      else if (provider.billing) parts.push(provider.billing);
+      if (provider.contextWindow) parts.push('上下 ' + Math.round(provider.contextWindow / 1000) + 'K');
+      return parts.join(' · ');
+    }
+
+    function ModelPanel() {
+      mpStyle();
+      const [collapsed, setCollapsed] = React.useState(true);
+      const [data, setData] = React.useState(null);
+      const [error, setError] = React.useState('');
+      const [open, setOpen] = React.useState('');
+
+      React.useEffect(() => {
+        let alive = true;
+        const load = () => {
+          fetch('jingwei/models', { cache: 'no-store' })
+            .then((res) => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+            .then((value) => { if (alive) { setData(value); setError(''); } })
+            .catch((err) => { if (alive) setError(String(err && err.message ? err.message : err)); });
+        };
+        load();
+        const timer = setInterval(load, 60000);
+        return () => { alive = false; clearInterval(timer); };
+      }, []);
+
+      const models = data && Array.isArray(data.models) ? data.models : [];
+      const accounts = data && data.buddy && Array.isArray(data.buddy.accountsSummary) ? data.buddy.accountsSummary : [];
+      const credit = accounts.reduce((sum, row) => sum + (Number.isFinite(row.credit) ? row.credit : 0), 0);
+      const active = accounts.reduce((sum, row) => sum + (row.active || 0), 0);
+      const highCount = data && data.gateway && data.gateway.high ? data.gateway.high.length : 0;
+
+      if (collapsed) {
+        return React.createElement('div', { className: 'mp-rail', onClick: () => setCollapsed(false), title: '可用模型' },
+          React.createElement('div', { className: 'mp-rail-mark' }, 'M'),
+          React.createElement('div', { className: 'mp-rail-text' }, '可用模型'),
+          React.createElement('div', { className: 'mp-rail-count' }, models.length ? String(models.length) : '—'));
+      }
+
+      return React.createElement('div', { className: 'mp-panel' },
+        React.createElement('div', { className: 'mp-head' },
+          React.createElement('div', { className: 'mp-title' }, '可用模型'),
+          React.createElement('div', { className: 'mp-sub' }, models.length + ' 个'),
+          React.createElement('button', { className: 'mp-close', onClick: () => setCollapsed(true), title: '收起' }, '×')),
+        React.createElement('div', { className: 'mp-summary' },
+          React.createElement('div', { className: 'mp-summary-row' },
+            React.createElement('span', null, 'BUDDY 账号'),
+            React.createElement('b', null, active + ' 活跃 · 余额 ' + credit.toFixed(2))),
+          React.createElement('div', { className: 'mp-summary-row' },
+            React.createElement('span', null, '嗨模型 high'),
+            React.createElement('b', null, highCount + ' 个渠道'))),
+        React.createElement('div', { className: 'mp-list' },
+          error
+            ? React.createElement('div', { className: 'mp-empty' }, '读取失败：' + error)
+            : models.length === 0
+              ? React.createElement('div', { className: 'mp-empty' }, data ? '没有可用模型' : '读取中…')
+              : models.map((model) => {
+                  const isOpen = open === model.name;
+                  return React.createElement('div', { className: 'mp-model', key: model.name },
+                    React.createElement('div', { className: 'mp-model-head', onClick: () => setOpen(isOpen ? '' : model.name) },
+                      React.createElement('span', { className: 'mp-dot' + (model.providers && model.providers.length ? ' ok' : '') }),
+                      React.createElement('span', { className: 'mp-model-name' }, model.name),
+                      model.intel ? React.createElement('span', { className: 'mp-tier', title: '智力档 ' + model.intel.label + ' · Elo ' + model.intel.elo + ' · GPQA ' + model.intel.gpqa }, model.intel.label) : null,
+                      React.createElement('span', { className: 'mp-badge' }, (model.providers ? model.providers.length : 0) + ' 渠道')),
+                    isOpen ? React.createElement('div', { className: 'mp-providers' },
+                      (model.providers || []).map((provider, index) => React.createElement('div', { className: 'mp-provider', key: provider.source + '-' + provider.channel + '-' + index },
+                        React.createElement('div', { className: 'mp-provider-name' }, provider.channelName || provider.channel || provider.source),
+                        React.createElement('div', { className: 'mp-provider-meta' }, mpMeta(provider) || provider.source)))) : null);
+                })));
+    }
     return {
       inject: ['slots', 'sidebarRightTabs'],
 

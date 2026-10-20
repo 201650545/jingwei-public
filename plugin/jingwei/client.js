@@ -2710,12 +2710,25 @@ function artifactType(n) {
 
         rebuild(false);
 
-        requestAnimationFrame(() => {
-          if (destroyed) return;
+        // ⚠️ 2026-10-20 修（画布首屏停在 DEMO 假数据的真凶）：
+        //   原来把 fit() 和 **首次真实数据加载** reload(false) 一起塞进
+        //   requestAnimationFrame。但 rAF 只在页面**可见**时才触发 ——
+        //   DSH 窗口被遮挡/隐藏时 document.hidden === true，rAF 永久不跑，
+        //   于是 reload 永不执行，画布就停在 normalize(DEMO) 的假数据上
+        //   （显示「文案 / 设计 / 汇总」，而 graph.json 里是另外的节点）。
+        //   真实数据加载是**数据职责**，不能依赖动画帧。
+        reload(false);
 
+        // fit 仍要等一帧（要实测节点高度），但页面隐藏时 rAF 不触发 ⇒
+        // 加一个 setTimeout 兜底，保证「隐藏着打开右栏」也能把画面摆正。
+        let fitted = false;
+        const fitOnce = () => {
+          if (fitted || destroyed) return;
+          fitted = true;
           fit();
-          reload(false);
-        });
+        };
+        requestAnimationFrame(fitOnce);
+        setTimeout(fitOnce, 300);
       })();
 
       return () => {

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 经纬 · Host 半边（v0.2）
  *
  * 职责：
@@ -37,7 +37,8 @@ export const name = 'jingwei'
 /** 重跑依赖宿主已有的 Agent / 子 Agent 服务；缺了就不激活。 */
 export const inject = ['webServer', 'agents', 'subagents']
 
-const ROOT = process.env.JINGWEI_HOME ?? 'D:\\Work\\经纬'
+// Set JINGWEI_HOME to the directory that holds app/data, app/assets and artifacts.
+const ROOT = process.env.JINGWEI_HOME ?? '<JINGWEI_HOME>'
 const DATA_DIR = join(ROOT, 'app', 'data')
 const ASSET_DIR = join(ROOT, 'app', 'assets')
 const ARTIFACT_DIR = join(ROOT, 'artifacts')

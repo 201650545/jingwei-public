@@ -53,14 +53,16 @@ plugin/jingwei/package.json  plugin manifest
 plugin/jingwei/prompts.json  rerun prompts (context only)
 docs/canvas-spec.md          visual and interaction rules (v3.2)
 docs/architecture.md         data contract and endpoints
-docs/img/                    current screenshots (420px panel width)
+docs/img/                    screenshots — `ui-canvas-v32.png` is current (v3.2); the other two predate it
 sample/graph.json            synthetic graph data for local experiments
 HANDOFF.md                   the review task and output protocol
 ```
 
 ## Known gaps in this snapshot
 
-- The screenshot in `docs/img/` predates the v3.2 vertical-axis layout; it still shows the older column arrangement. The code is ahead of the picture.
+- **Three modules imported by `index.js` are not in this snapshot**: `orchestrator-v4.js`, `modelpanel-data3.js` and `probe.js`. They are withheld because they contain deployment configuration and credentials handling that do not belong in a public review snapshot. `client.js` does not import them — it is self-contained and is the file under review. Do not try to `import` `index.js` as-is.
+- `index.js` is context only: it shows the HTTP contract between the canvas client and the host. The canonical source of that contract is `docs/architecture.md`.
+- `docs/img/ui-canvas-v32.png` is current and matches the v3.2 vertical-axis layout. `ui-canvas-420.png` and `ui-canvas-menu.png` predate v3.2 and still show the older column arrangement.
 - The preview page, `publish` and `archive` actions have unit-level coverage but have not been exercised end-to-end inside the Harness.
 
 ## License
